@@ -9,7 +9,9 @@ V1 不接入任何大模型 API，不使用数据库，也不包含登录或权�
 - Phase 1 completed：项目结构、依赖、数据契约和代表性样例数据已建立。
 - Phase 2 completed：CSV/XLSX Loader、Validator、Clean DataFrame 和 Validation Report 已实现。
 - Phase 2.2 completed：CSV 结构完整性、Count 精度、Business Key Conflict、XLSX 异常边界和宽日期范围已加固，并已补齐回归测试。
-- Phase 3 not started：指标计算、异常诊断、报表、Pipeline 和 Streamlit 页面业务逻辑尚未实现。
+- Phase 3 Metrics Engine completed：Base Measures、Inventory Snapshot 聚合和八项固定指标已实现。
+- Phase 3.1 completed：CSV NUL、Loader/Metrics 异常边界、容器型 Extra Column 和关键指标回归测试已加固。
+- Phase 4 not started：异常诊断、报表、Pipeline 和 Streamlit 页面业务逻辑尚未实现。
 
 当前已实现的数据流为：
 
@@ -23,6 +25,10 @@ Raw DataFrame
 Validator
    ↓
 Clean DataFrame + Validation Report
+   ↓
+Metrics Engine
+   ↓
+Aggregated Metrics DataFrame
 ```
 
 ## 项目目标
@@ -33,7 +39,7 @@ Clean DataFrame + Validation Report
 - 使用透明、可配置的规则识别经营异常。
 - 在页面展示结果并生成可下载的中文 Excel 运营报表。
 
-后面三项属于 Phase 3 及之后的计划，当前尚未实现。
+SKU 指标聚合已在 Phase 3 实现；异常诊断和页面/报表属于 Phase 4 及之后的计划，当前尚未实现。
 
 ## 输入数据契约
 
@@ -79,6 +85,7 @@ Validator 从原始值直接做精确整数校验，不经 `Float64` 中转。�
 - 在构造最终 DataFrame 前，Loader 使用标准 CSV 语义检查每条逻辑 record 的字段数量。每条数据 record 的字段数必须与 header 完全一致。
 - quoted comma、quoted field、quoted newline 和 escaped quote 按 CSV 规则解析，不使用简单的逗号切分。
 - 字段过多、字段缺失或引号结构损坏时，整个文件被拒绝并产生 `DataLoadError(code="MALFORMED_CSV")`；不会截断字段、吞掉字段或把额外字段变成 index。
+- CSV 原始内容只要包含 NUL byte（`\x00`），即视为 malformed input，并通过 `DataLoadError(code="MALFORMED_CSV")` 拒绝；不会删除、替换、截断或静默修复。
 - 只有 header、没有数据 record 的 CSV 视为空文件。
 
 ### XLSX 输入行为
@@ -87,6 +94,17 @@ Validator 从原始值直接做精确整数校验，不经 `Float64` 中转。�
 - XLSX 原生日期单元格由 openpyxl/Pandas 读取为日期或日期时间对象。V1 接受日期值以及时间部分为 `00:00:00` 的日期时间值，并规范化为 Python `datetime.date`；带非零时间或时区的值不符合日粒度契约。
 - 文本日期仍必须严格使用 `YYYY-MM-DD`。系统不会根据单元格视觉格式猜测日期。
 - XML、ZIP 内部结构、openpyxl 或 Pandas 的底层读取失败统一包装为 `DataLoadError(code="FILE_READ_ERROR")`，不向调用方泄漏第三方异常。
+
+### Loader Error Boundary
+
+Loader 公共接口的文件读取和解析失败统一暴露为 `DataLoadError`，不会向上泄漏普通底层 `Exception`；原异常通过 exception chaining 保留。`KeyboardInterrupt`、`SystemExit` 等 `BaseException` 不会被误吞。V1 Loader 使用以下稳定 Code：
+
+| Code | 含义 |
+| --- | --- |
+| `UNSUPPORTED_FILE_TYPE` | 文件扩展名不受支持 |
+| `EMPTY_FILE` | 文件或工作簿没有可读取的数据行 |
+| `MALFORMED_CSV` | CSV record 结构、引号或 NUL byte 不合法 |
+| `FILE_READ_ERROR` | 文件读取、编码或底层解析失败 |
 
 ### 数据粒度与业务键
 
@@ -107,6 +125,7 @@ date + marketplace + country + sku
 - Exact Duplicate：所有输入字段的原始内容完全相同。记录 `EXACT_DUPLICATE` Warning，保留首次出现的代表记录并删除后续副本。即使记录自身已有其他 Error，重复事实仍会被识别；“保留首次出现”不覆盖该记录本身的其他排除规则。
 - Business Key Conflict：可可靠构建的 Business Key 相同，但存在内容不同的记录。不同内容的代表记录产生 `BUSINESS_KEY_CONFLICT` Error，该 Business Key 的所有记录全部排除，不自动求和、平均、修复或择一保留。后续 Exact Duplicate 副本按去重规则排除。
 - 非 Business Key 字段上的其他 Error 不会阻止 Conflict 检测。Business Key 本身缺失或日期无效时，不构造伪 Key，也不产生无意义的二次 Conflict。
+- Extra Column 仍参与 Exact Duplicate 的“所有输入字段完全相同”比较。dict、list、set 等容器值不要求可哈希：相同容器内容可构成 Exact Duplicate；内容不同则不是 Exact Duplicate，若 Business Key 相同仍按 Business Key Conflict 处理。
 
 ### 币种假设
 
@@ -153,32 +172,104 @@ V1 假定上传前已将所有 `sales` 和 `ad_spend` 转换为 USD。因此跨 
 | `sales`、`ad_spend` | Pandas nullable `Float64` |
 | 文本和额外字段 | 保留为对象/文本值 |
 
-## 指标口径（Phase 3 计划）
+## Metrics Engine
 
-以下口径已冻结，但尚未实现业务计算：
+Metrics Engine 只接受 Phase 2.2 Validator 输出的 Clean DataFrame，不重新执行日期清洗、数值转换、Error 过滤、去重或 Business Key 校验。
 
-| 指标 | 公式 |
+公共接口：
+
+```python
+calculate_metrics(dataframe, group_by=None) -> pandas.DataFrame
+```
+
+- `group_by=None`、`[]` 或 `()` 表示 Overall；非空输入返回一行整体指标。
+- 也可以传入单个字符串或有序字符串序列。
+- 正式分组维度仅限 `date`、`marketplace`、`country`、`sku`。
+- `product_name` 和其他 Extra Columns 作为附加输入列时会被忽略；若显式传入 `group_by`，则作为非法维度处理。
+- 未知维度、重复维度或非字符串维度产生 `INVALID_GROUP_BY`。
+- 缺少计算必需字段产生 `MISSING_METRIC_INPUT_COLUMN`。
+
+### 八项固定指标
+
+| 指标 | 输出列 | 公式 | Numerator | Denominator | 聚合分母为 0 |
+| --- | --- | --- | --- | --- | --- |
+| CTR | `ctr` | `clicks / impressions` | `clicks` | `impressions` | `NaN` |
+| CVR | `cvr` | `orders / clicks` | `orders` | `clicks` | `NaN` |
+| AOV | `aov` | `sales / orders` | `sales` | `orders` | `NaN` |
+| CPC | `cpc` | `ad_spend / clicks` | `ad_spend` | `clicks` | `NaN` |
+| CPA | `cpa` | `ad_spend / orders` | `ad_spend` | `orders` | `NaN` |
+| ROAS | `roas` | `sales / ad_spend` | `sales` | `ad_spend` | `NaN` |
+| Refund Rate | `refund_rate` | `refunds / orders` | `refunds` | `orders` | `NaN` |
+| GMV | `gmv` | `sum(sales)` | `sales` | — | 不适用 |
+
+所有 Ratio 必须先聚合 Numerator 和 Denominator，再做除法，即 **Ratio of Sums**。禁止先计算行级比例再求平均。V1 同时输出 Base Measure `sales` 和指标 `gmv`；两者数值相同，这是为了保留样本基础值和指标语义别名。
+
+Derived Metric 的聚合分母为 `0` 时返回 `NaN`，无论聚合 Numerator 是 `0` 还是正数。Required Source Value 的缺失由 Validator 在 Phase 2 排除，不会进入正常 Metrics Engine 输入；这与零分母指标结果是两个不同概念。
+
+### 输出 Schema
+
+输出列顺序固定为：
+
+```text
+调用者给定的 Group Dimensions
+→ impressions, clicks, orders, units_sold
+→ sales, ad_spend, refunds, inventory
+→ ctr, cvr, aov, cpc, cpa, roas, refund_rate, gmv
+```
+
+| 输出类型 | dtype |
 | --- | --- |
-| CTR | `clicks / impressions` |
-| CVR | `orders / clicks` |
-| AOV | `sales / orders` |
-| CPC | `ad_spend / clicks` |
-| CPA | `ad_spend / orders` |
-| ROAS | `sales / ad_spend` |
-| Refund Rate | `refunds / orders` |
-| GMV | `sum(sales)` |
+| `date` | `object`，元素为 Python `datetime.date` |
+| 文本维度 | 继承 Clean DataFrame 的文本/object dtype |
+| 六个 Count Base Measures | Pandas nullable `Int64` |
+| `sales`、`ad_spend`、`gmv` | Pandas nullable `Float64` |
+| 七个 Ratio | NumPy `float64`，零分母使用真正的 `NaN` |
 
-聚合指标必须先汇总分子和分母，再执行除法，不能对行级比例做简单平均。例如，SKU CTR 应为该 SKU 的总点击量除以总曝光量。
+相同输入和相同 `group_by` 会得到稳定的列顺序、按分组维度升序排列的行顺序、`RangeIndex`、值和 dtype。Metrics Engine 不原地修改输入 DataFrame。具有正确 Schema 的空输入返回零行但列和 dtype 稳定的 Metrics DataFrame，不制造虚假的 Overall 全零行。
 
-### 零分母规则
+### Base Measures 与 Inventory Snapshot
 
-所有除法必须安全处理分母为 0 或缺失的情况：
+以下期间流量字段始终在完整输入范围内求和：
 
-- 结果定义为缺失值 `NaN`，不返回无穷大，也不强制写成 0。
-- Streamlit 页面计划显示为 `—`。
-- Excel 报告计划保持单元格为空。
+```text
+impressions, clicks, orders, units_sold, sales, ad_spend, refunds
+```
 
-## Demo Default Thresholds（Phase 3 计划）
+`inventory` 是日末库存快照，不是期间流量：
+
+- 当 `group_by` 包含 `date` 时，只对同一目标日期组内实际存在的 SKU 库存横向求和，不做 forward-fill。
+- 当 `group_by` 不包含 `date` 时，先为每个 `marketplace + country + sku` 库存实体选择当前输入范围内 latest date 的 inventory，再按目标维度汇总。
+- Overall 同样使用各库存实体的 latest inventory 之和。不同实体的 latest date 可以不同，因此它是异步最新快照的合计，不代表统一的全局 as-of date。
+- latest 选择只作用于 inventory；其他 Base Measures 仍聚合完整分析期。
+
+### 精度、溢出与展示边界
+
+- Count 使用 Python 精确整数完成分组求和，不经 `Float64`。`9007199254740993` 可以精确保留。
+- 任一目标 Group 的 Count 聚合结果超过 `9223372036854775807` 时，整个调用产生 `COUNT_AGGREGATION_OVERFLOW`，不会回绕或返回部分结果。
+- Money 继续使用 Float64；有限输入的求和如果溢出则产生 `MONEY_AGGREGATION_OVERFLOW`。
+- 非零分母的极端 Ratio 如果产生非有限结果，则产生 `NON_FINITE_METRIC_RESULT`。Metrics DataFrame 不返回 `inf` 或 `-inf`。
+- Metrics 不做汇率转换；继续信任 `sales` 和 `ad_spend` 已是 USD。
+- `refunds` 继续表示退款订单数，而不是退款金额。
+- Warning 数据正常参与计算。CVR 和 Refund Rate 可以大于 1，不做 clipping。
+- Metrics 不 Round、不乘以 100，也不返回百分号、货币符号、`—` 或 `N/A`。
+- 内部零分母结果保持 `NaN`；未来 UI 计划显示为 `—`，Excel 报告计划保持为空白单元格。
+- 日期保持 Python `datetime.date`，不会重新转换为 `datetime64[ns]`。
+
+Metrics 接口使用 `MetricsCalculationError` 和稳定 Code：
+
+| Code | 含义 |
+| --- | --- |
+| `INVALID_METRIC_INPUT` | 输入对象不是 DataFrame |
+| `MISSING_METRIC_INPUT_COLUMN` | 缺少计算必需字段 |
+| `INVALID_GROUP_BY` | 分组维度或分组参数非法 |
+| `INVALID_METRIC_INPUT_VALUE` | 输入不符合 Validator Clean DataFrame 接口契约 |
+| `COUNT_AGGREGATION_OVERFLOW` | Count 聚合超过 Int64 上限 |
+| `MONEY_AGGREGATION_OVERFLOW` | Money 聚合产生溢出或非有限值 |
+| `NON_FINITE_METRIC_RESULT` | 非零分母的指标计算产生非有限值 |
+
+`calculate_metrics()` 不重新实现 Validator，但会维护稳定的公共异常边界。手工构造的非法 DataFrame 如果在分组、latest inventory、数值转换或计算阶段触发普通 `TypeError`、`ValueError` 或 `OverflowError`，统一包装为 `INVALID_METRIC_INPUT_VALUE` 并保留 exception chaining。已经明确产生的 `MetricsCalculationError` 原样向上传递，不会被再次包装；非零分母计算得到非有限结果时继续使用独立的 `NON_FINITE_METRIC_RESULT`。
+
+## Demo Default Thresholds（Phase 4 计划）
 
 以下阈值仅用于演示规则诊断能力，统称为 **Demo Default Thresholds**。它们不是行业标准，也不代表任何平台的官方建议；后续应根据品类、市场、利润结构和投放目标调整。
 
@@ -202,7 +293,7 @@ V1 假定上传前已将所有 `sales` 和 `ad_spend` 转换为 USD。因此跨 
 
 ```text
 CrossBorder Ops Radar/
-├── app.py                       # Phase 3 前占位
+├── app.py                       # Phase 4 及之后占位
 ├── README.md
 ├── requirements.txt
 ├── data/
@@ -212,13 +303,14 @@ CrossBorder Ops Radar/
 │   ├── config.py                # V1 数据契约常量
 │   ├── loader.py                # CSV/XLSX 加载与稳定读取错误
 │   ├── validator.py             # 数据校验、清洗结果与结构化报告
-│   ├── metrics.py               # Phase 3 前占位
-│   ├── diagnostics.py           # Phase 3 前占位
-│   ├── report.py                # Phase 3 前占位
-│   └── pipeline.py              # Phase 3 前占位
+│   ├── metrics.py               # Base Measures、库存快照与八项指标
+│   ├── diagnostics.py           # Phase 4 前占位
+│   ├── report.py                # 后续 Phase 占位
+│   └── pipeline.py              # 后续 Phase 占位
 └── tests/
     ├── test_loader.py
-    └── test_validator.py
+    ├── test_validator.py
+    └── test_metrics.py
 ```
 
 运行测试：

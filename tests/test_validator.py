@@ -80,6 +80,58 @@ def test_extra_columns_are_allowed_and_preserved() -> None:
     assert result.clean_data.loc[0, "notes"] == "keep me"
 
 
+def test_extra_dict_column_does_not_crash() -> None:
+    result = validate_dataframe(
+        pd.DataFrame(
+            [
+                make_row(
+                    metadata={"color": "red"},
+                    tags=["new", "sale"],
+                    channels={"Amazon", "eBay"},
+                )
+            ]
+        )
+    )
+
+    assert result.report.errors == []
+    assert result.clean_data.loc[0, "metadata"] == {"color": "red"}
+    assert result.clean_data.loc[0, "tags"] == ["new", "sale"]
+    assert result.clean_data.loc[0, "channels"] == {"Amazon", "eBay"}
+
+
+def test_equal_container_extra_column_can_be_duplicate() -> None:
+    first = make_row(
+        metadata={"color": "red"},
+        tags=["new", "sale"],
+        channels={"Amazon", "eBay"},
+    )
+    second = make_row(
+        metadata={"color": "red"},
+        tags=["new", "sale"],
+        channels={"eBay", "Amazon"},
+    )
+
+    result = validate_dataframe(pd.DataFrame([first, second]))
+
+    assert len(result.clean_data) == 1
+    assert issue_codes(result, "warnings") == ["EXACT_DUPLICATE"]
+    assert result.report.errors == []
+
+
+def test_different_container_extra_column_is_not_exact_duplicate() -> None:
+    first = make_row(metadata={"color": "red"})
+    second = make_row(metadata={"color": "blue"})
+
+    result = validate_dataframe(pd.DataFrame([first, second]))
+
+    assert "EXACT_DUPLICATE" not in issue_codes(result, "warnings")
+    assert issue_codes(result, "errors") == [
+        "BUSINESS_KEY_CONFLICT",
+        "BUSINESS_KEY_CONFLICT",
+    ]
+    assert result.clean_data.empty
+
+
 @pytest.mark.parametrize("field_name", ["sku", "country", "sales"])
 def test_missing_required_value_is_error_and_excluded(field_name: str) -> None:
     result = validate_dataframe(pd.DataFrame([make_row(**{field_name: "  "})]))

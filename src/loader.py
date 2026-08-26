@@ -26,7 +26,7 @@ def _read_source_bytes(source: FileSource) -> bytes:
     if isinstance(source, (str, Path)):
         try:
             return Path(source).read_bytes()
-        except OSError as exc:
+        except Exception as exc:
             raise DataLoadError(
                 "FILE_READ_ERROR", f"无法读取文件：{exc}"
             ) from exc
@@ -41,7 +41,9 @@ def _read_source_bytes(source: FileSource) -> bytes:
         if hasattr(source, "seek"):
             source.seek(0)
         content = source.read()
-    except (OSError, ValueError) as exc:
+    except DataLoadError:
+        raise
+    except Exception as exc:
         raise DataLoadError(
             "FILE_READ_ERROR", f"读取上传文件时发生错误：{exc}"
         ) from exc
@@ -72,6 +74,12 @@ def _decode_csv(content: bytes) -> str:
 
 
 def _validate_csv_structure(content: bytes) -> str:
+    if b"\x00" in content:
+        raise DataLoadError(
+            "MALFORMED_CSV",
+            "CSV 文件包含不受支持的 NUL byte。",
+        )
+
     text = _decode_csv(content)
     try:
         reader = csv.reader(StringIO(text, newline=""), strict=True)

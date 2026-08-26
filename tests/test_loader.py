@@ -69,6 +69,13 @@ def test_csv_unclosed_quote_is_rejected() -> None:
     assert exc_info.value.code == "MALFORMED_CSV"
 
 
+def test_csv_with_nul_byte_is_rejected() -> None:
+    with pytest.raises(DataLoadError) as exc_info:
+        load_csv(b"sku\nSKU\x00-A\n")
+
+    assert exc_info.value.code == "MALFORMED_CSV"
+
+
 def test_csv_blank_physical_line_is_ignored() -> None:
     dataframe = load_csv(b"sku,sales\n\nSKU-1,12.50\n")
 
@@ -174,3 +181,15 @@ def test_corrupt_xlsx_internal_xml_is_file_read_error() -> None:
         load_excel(corrupt_xlsx.getvalue())
 
     assert exc_info.value.code == "FILE_READ_ERROR"
+
+
+def test_file_object_runtime_error_is_wrapped() -> None:
+    class BrokenFile:
+        def read(self) -> bytes:
+            raise RuntimeError("boom")
+
+    with pytest.raises(DataLoadError) as exc_info:
+        load_csv(BrokenFile())  # type: ignore[arg-type]
+
+    assert exc_info.value.code == "FILE_READ_ERROR"
+    assert isinstance(exc_info.value.__cause__, RuntimeError)

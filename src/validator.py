@@ -133,6 +133,106 @@ def _parse_count(value: Any) -> tuple[int | None, str | None]:
     return int(number), None
 
 
+def _is_scalar_missing(value: Any) -> bool:
+    try:
+        missing = pd.isna(value)
+    except (TypeError, ValueError):
+        return False
+    if not pd.api.types.is_scalar(missing):
+        return False
+    try:
+        return bool(missing)
+    except (TypeError, ValueError):
+        return False
+
+
+def _raw_values_equal(left: Any, right: Any) -> bool:
+    """Compare raw scalar or container values without requiring hashability."""
+
+    if left is right:
+        return True
+
+    if isinstance(left, dict) or isinstance(right, dict):
+        if not isinstance(left, dict) or not isinstance(right, dict):
+            return False
+        if left.keys() != right.keys():
+            return False
+        return all(_raw_values_equal(left[key], right[key]) for key in left)
+
+    sequence_types = (list, tuple)
+    if isinstance(left, sequence_types) or isinstance(right, sequence_types):
+        if type(left) is not type(right) or len(left) != len(right):
+            return False
+        return all(
+            _raw_values_equal(left_item, right_item)
+            for left_item, right_item in zip(left, right)
+        )
+
+    set_types = (set, frozenset)
+    if isinstance(left, set_types) or isinstance(right, set_types):
+        if type(left) is not type(right):
+            return False
+        try:
+            return bool(left == right)
+        except (TypeError, ValueError):
+            return False
+
+    left_missing = _is_scalar_missing(left)
+    right_missing = _is_scalar_missing(right)
+    if left_missing or right_missing:
+        return left_missing and right_missing
+
+    try:
+        equal = left == right
+    except (TypeError, ValueError):
+        return False
+    if not pd.api.types.is_scalar(equal):
+        return False
+    try:
+        return bool(equal)
+    except (TypeError, ValueError):
+        return False
+
+
+def _exact_duplicate_positions(dataframe: pd.DataFrame) -> set[int]:
+    """Return duplicate row positions, with a safe path for container values."""
+
+    rows = list(dataframe.itertuples(index=False, name=None))
+    requires_safe_comparison = False
+    for row in rows:
+        for value in row:
+            try:
+                hash(value)
+            except TypeError:
+                requires_safe_comparison = True
+                break
+        if requires_safe_comparison:
+            break
+
+    if not requires_safe_comparison:
+        duplicate_mask = dataframe.duplicated(keep="first")
+        return {
+            int(position) for position in duplicate_mask.index[duplicate_mask]
+        }
+
+    duplicate_positions: set[int] = set()
+    representative_positions: list[int] = []
+    for position, row in enumerate(rows):
+        is_duplicate = any(
+            len(row) == len(rows[representative])
+            and all(
+                _raw_values_equal(left, right)
+                for left, right in zip(row, rows[representative])
+            )
+            for representative in representative_positions
+        )
+        if is_duplicate:
+            duplicate_positions.add(position)
+        else:
+            representative_positions.append(position)
+    return duplicate_positions
+
+
 def validate_dataframe(dataframe: pd.DataFrame) -> ValidationResult:
     """Validate raw input and return analysis-ready rows with structured issues.
 
@@ -311,10 +411,9 @@ def validate_dataframe(dataframe: pd.DataFrame) -> ValidationResult:
 
     duplicate_positions: set[int] = set()
     if total_rows:
-        duplicate_mask = raw_work.loc[:, list(dataframe.columns)].duplicated(keep="first")
-        duplicate_positions = {
-            int(position) for position in duplicate_mask.index[duplicate_mask]
-        }
+        duplicate_positions = _exact_duplicate_positions(
+            raw_work.loc[:, list(dataframe.columns)]
+        )
         for position in sorted(duplicate_positions):
             add_issue(
                 "Warning",
