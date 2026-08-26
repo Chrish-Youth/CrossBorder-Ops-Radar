@@ -11,7 +11,9 @@ V1 不接入任何大模型 API，不使用数据库，也不包含登录或权�
 - Phase 2.2 completed：CSV 结构完整性、Count 精度、Business Key Conflict、XLSX 异常边界和宽日期范围已加固，并已补齐回归测试。
 - Phase 3 Metrics Engine completed：Base Measures、Inventory Snapshot 聚合和八项固定指标已实现。
 - Phase 3.1 completed：CSV NUL、Loader/Metrics 异常边界、容器型 Extra Column 和关键指标回归测试已加固。
-- Phase 4 not started：异常诊断、报表、Pipeline 和 Streamlit 页面业务逻辑尚未实现。
+- Phase 4 Diagnostics Engine completed：Demo 默认阈值、最小样本门槛和七条确定性经营诊断规则已实现。
+- Phase 5 Pipeline Orchestration completed：Loader、Validator、Metrics 和 Diagnostics 已通过统一入口顺序串联。
+- Phase 6 not started：报表、Excel 导出和 Streamlit 页面业务逻辑尚未实现。
 
 当前已实现的数据流为：
 
@@ -29,6 +31,10 @@ Clean DataFrame + Validation Report
 Metrics Engine
    ↓
 Aggregated Metrics DataFrame
+   ↓
+Diagnostics Engine
+   ↓
+Structured Diagnostics DataFrame
 ```
 
 ## 项目目标
@@ -39,7 +45,7 @@ Aggregated Metrics DataFrame
 - 使用透明、可配置的规则识别经营异常。
 - 在页面展示结果并生成可下载的中文 Excel 运营报表。
 
-SKU 指标聚合已在 Phase 3 实现；异常诊断和页面/报表属于 Phase 4 及之后的计划，当前尚未实现。
+SKU 指标聚合已在 Phase 3 实现，确定性规则诊断已在 Phase 4 实现，统一业务入口已在 Phase 5 实现；页面、报表和导出属于 Phase 6 及之后的计划，当前尚未实现。
 
 ## 输入数据契约
 
@@ -269,21 +275,142 @@ Metrics 接口使用 `MetricsCalculationError` 和稳定 Code：
 
 `calculate_metrics()` 不重新实现 Validator，但会维护稳定的公共异常边界。手工构造的非法 DataFrame 如果在分组、latest inventory、数值转换或计算阶段触发普通 `TypeError`、`ValueError` 或 `OverflowError`，统一包装为 `INVALID_METRIC_INPUT_VALUE` 并保留 exception chaining。已经明确产生的 `MetricsCalculationError` 原样向上传递，不会被再次包装；非零分母计算得到非有限结果时继续使用独立的 `NON_FINITE_METRIC_RESULT`。
 
-## Demo Default Thresholds（Phase 4 计划）
+## Diagnostics Engine
 
-以下阈值仅用于演示规则诊断能力，统称为 **Demo Default Thresholds**。它们不是行业标准，也不代表任何平台的官方建议；后续应根据品类、市场、利润结构和投放目标调整。
+Diagnostics Engine 只接受 Phase 3 `calculate_metrics()` 产生的 Metrics DataFrame，不读取原始文件、不调用 Loader/Validator、不重新聚合 Base Measures，也不重新计算 Ratio 或 Inventory Snapshot。
 
-| 诊断场景 | Demo 默认规则 |
+公共接口：
+
+```python
+diagnose_metrics(dataframe) -> pandas.DataFrame
+```
+
+一条 Diagnostic Issue 对应一行输出。Metrics 中存在的正式 Group Dimensions 按输入列顺序保留，随后固定输出：
+
+```text
+group dimensions
+→ code, severity, metric, actual_value, threshold, evidence, message
+```
+
+- `actual_value` 和 `threshold` 使用 Pandas nullable `Float64`。
+- `evidence` 是包含样本门槛依据的 Python dict，dtype 为 `object`。
+- Group Dimension dtype 继承输入 Metrics DataFrame。
+- 正常 Group 不生成 `NORMAL`、`HEALTHY` 或其他占位 Issue。
+- 正确 Schema 的 Empty Metrics DataFrame 返回零行稳定 Schema。
+- 输出按原 Metrics 行顺序、再按固定 Rule Order 排列，并使用稳定 `RangeIndex`。
+- Diagnostics 不原地修改输入 Metrics DataFrame。
+
+### Demo Default Thresholds 与 V1 Diagnostic Rules
+
+以下阈值只用于演示规则诊断能力，统称为 **Demo Default Thresholds**。它们不是行业标准，也不代表 Amazon 或其他平台的官方建议。
+
+| Code | Condition | Threshold | Minimum Sample / Eligibility | Severity |
+| --- | --- | --- | --- | --- |
+| `HIGH_IMPRESSIONS_LOW_CTR` | `ctr < 0.01` | CTR `1%` | `impressions >= 1000` | `Warning` |
+| `LOW_CVR` | `cvr < 0.02` | CVR `2%` | `clicks >= 50` | `Warning` |
+| `CLICKS_WITHOUT_ORDERS` | `orders = 0` | Orders `0` | `clicks >= 20` | `Warning` |
+| `SPEND_WITHOUT_ORDERS` | `orders = 0` | Orders `0` | `clicks >= 20` 且 `ad_spend > 0` | `Warning` |
+| `LOW_ROAS` | `roas < 1` | ROAS `1` | `ad_spend > 0` | `Warning` |
+| `HIGH_REFUND_RATE` | `refund_rate > 0.10` | Refund Rate `10%` | `orders >= 10` | `Warning` |
+| `OUT_OF_STOCK` | `inventory = 0` | Inventory `0` | `units_sold >= 1`，等价于分析期内 `units_sold > 0` | `Warning` |
+
+V1 没有冻结多级 Severity 阈值，因此七条规则统一使用稳定的 `Warning`，不自行推断 `Critical`。固定 Rule Order 与上表顺序一致。
+
+规则边界严格保持：
+
+- `<` 和 `>` 不包含阈值本身；例如 `CTR = 1%`、`CVR = 2%`、`ROAS = 1`、`Refund Rate = 10%` 均不触发相应规则。
+- `>=` 的最小样本门槛包含边界；例如 `impressions = 1000`、`clicks = 50`、`orders = 10` 已满足对应 Sample Gate。
+- Sample Gate 先于 Ratio Threshold 判断。样本不足时，即使 Ratio 很低也不触发。
+- Ratio 为 `NaN` 时跳过对应 Ratio Rule，不将 `NaN` 填充或解释为 `0`。
+- CVR 和 Refund Rate 可以大于 `1`，不裁剪、不修正，也不重新定义为数据质量 Error。Refund Rate 达到规则条件时仍可产生经营诊断信号。
+- 同一 Group 可以独立触发多条 Issue；规则之间没有未声明的互斥或 precedence。
+- `OUT_OF_STOCK` 直接使用 Metrics 输出的 latest inventory snapshot，不返回原始数据重新计算。
+
+诊断结果只是基于 Demo 默认阈值生成的确定性经营信号，不代表行业标准，也不能直接证明问题根因。Phase 4 只输出事实化 Observation，不生成 Root Cause、运营建议或任何生成式 AI 内容。
+
+### Diagnostics Error Boundary
+
+Diagnostics 使用 `DiagnosticsError` 和以下稳定 Code：
+
+| Code | 含义 |
 | --- | --- |
-| 高曝光低点击 | `impressions >= 1000` 且 `CTR < 1%` |
-| 低转化 | `clicks >= 50` 且 `CVR < 2%` |
-| 有点击无订单 | `clicks >= 20` 且 `orders = 0` |
-| 广告花费无订单 | `ad_spend > 0`、`clicks >= 20` 且 `orders = 0` |
-| 低 ROAS | `ad_spend > 0` 且 `ROAS < 1` |
-| 高退款率 | `orders >= 10` 且 `Refund Rate > 10%` |
-| 缺货 | 最新有效日期的 `inventory = 0` 且分析期内 `units_sold > 0` |
+| `INVALID_DIAGNOSTIC_INPUT` | 输入对象不是 Pandas DataFrame |
+| `MISSING_DIAGNOSTIC_INPUT_COLUMN` | 缺少 Phase 3 Metrics 输出字段 |
+| `INVALID_DIAGNOSTIC_INPUT_VALUE` | 手工输入包含不符合 Metrics DataFrame 契约的值 |
 
-最小曝光、点击和订单样本量用于减少小样本误报。同一 SKU 可以同时命中多条诊断规则。
+`diagnose_metrics()` 不建立第二套 Validator，但会将接口内出现的普通 `TypeError`、`ValueError` 或 `OverflowError` 包装为 `INVALID_DIAGNOSTIC_INPUT_VALUE` 并保留 exception chaining；已经明确产生的 `DiagnosticsError` 原样向上传递。
+
+## Pipeline Orchestration
+
+Pipeline 只负责串联已有的确定性模块，不重复实现文件读取、数据校验、指标公式、库存快照或诊断规则。公共入口为：
+
+```python
+run_pipeline(
+    source,
+    *,
+    filename=None,
+    group_by=None,
+) -> PipelineResult
+```
+
+- `source` 原样传递给 Loader，支持现有 Loader 接受的 Path、bytes、bytearray 和 file-like object。
+- Path 或带 `.name` 的 file-like object 可以由 Loader 推断文件类型；无文件名的 bytes 或 file-like object 应通过 `filename` 指定 `.csv` 或 `.xlsx`。
+- `group_by` 原样传递给 `calculate_metrics()`；Pipeline 不追加维度、不改变顺序，也不自行解释 Overall。`None` 表示 Overall，合法维度仍只有 `date`、`marketplace`、`country`、`sku`。
+
+固定执行顺序为：
+
+```text
+load_file(source, filename)
+→ validate_dataframe(raw_data)
+→ calculate_metrics(validation.clean_data, group_by)
+→ diagnose_metrics(metrics)
+→ PipelineResult
+```
+
+Diagnostics 只接收当前 Pipeline 调用产生的 Metrics DataFrame，不接收 Raw DataFrame 或 Clean DataFrame。Pipeline 不修改任何阶段输出，也不会向下层 DataFrame 增加状态列。
+
+### PipelineResult
+
+V1 使用冻结的 `PipelineResult` dataclass：
+
+```python
+PipelineResult(
+    status: PipelineStatus,
+    validation: ValidationResult,
+    metrics: pandas.DataFrame | None,
+    diagnostics: pandas.DataFrame | None,
+)
+```
+
+- `PipelineStatus.SUCCESS`：Validation 没有 Fatal，Metrics 和 Diagnostics 均已成功完成。
+- `PipelineStatus.VALIDATION_FAILED`：Validation 存在 Fatal，Pipeline 已明确 short-circuit。
+- `validation` 保留 ValidationResult，因此 Clean DataFrame 和完整 Validation Report 仍可访问。
+- `metrics` 和 `diagnostics` 保存下游实际返回对象，不复制或改造 DataFrame。
+- PipelineResult 不额外保存 Raw DataFrame，也不重复保存 `validation.clean_data`，避免产生多个状态来源。
+
+### Validation Continuation 与 Short-circuit
+
+| Validation 结果 | Pipeline 行为 | Status |
+| --- | --- | --- |
+| Fatal，例如缺少必填列 | 停止；`metrics=None`、`diagnostics=None` | `VALIDATION_FAILED` |
+| 普通 Error | 排除错误行，其余 Clean Data 继续执行 | `SUCCESS` |
+| Warning | 保留相应数据并继续执行 | `SUCCESS` |
+| 无 Fatal 但所有行均被 Error 排除 | 继续生成稳定的 Empty Metrics 和 Empty Diagnostics | `SUCCESS` |
+
+Pipeline 不会把空 Clean DataFrame 制造为虚假的 Overall 全零行。Fatal short-circuit 后不会调用 Metrics 或 Diagnostics；Metrics 失败后也不会调用 Diagnostics。
+
+### Pipeline Exception Boundary
+
+Pipeline 不捕获并统一包装下层已经冻结的结构化异常：
+
+```text
+Loader Failure       → DataLoadError 原样传播
+Validation Fatal     → PipelineResult(status=VALIDATION_FAILED)
+Metrics Failure      → MetricsCalculationError 原样传播
+Diagnostics Failure  → DiagnosticsError 原样传播
+```
+
+因此 Diagnostics 失败不会返回 `SUCCESS + diagnostics=None` 这样的部分成功结果。相同 source 内容和相同 `group_by` 会产生稳定的 status、Validation、Metrics 和 Diagnostics 结果。
 
 ## 样例数据
 
@@ -293,7 +420,7 @@ Metrics 接口使用 `MetricsCalculationError` 和稳定 Code：
 
 ```text
 CrossBorder Ops Radar/
-├── app.py                       # Phase 4 及之后占位
+├── app.py                       # Phase 6 及之后占位
 ├── README.md
 ├── requirements.txt
 ├── data/
@@ -304,17 +431,19 @@ CrossBorder Ops Radar/
 │   ├── loader.py                # CSV/XLSX 加载与稳定读取错误
 │   ├── validator.py             # 数据校验、清洗结果与结构化报告
 │   ├── metrics.py               # Base Measures、库存快照与八项指标
-│   ├── diagnostics.py           # Phase 4 前占位
-│   ├── report.py                # 后续 Phase 占位
-│   └── pipeline.py              # 后续 Phase 占位
+│   ├── diagnostics.py           # Demo 阈值、七条规则与结构化诊断结果
+│   ├── report.py                # Phase 6 及之后占位
+│   └── pipeline.py              # 顺序编排与结构化 PipelineResult
 └── tests/
     ├── test_loader.py
     ├── test_validator.py
-    └── test_metrics.py
+    ├── test_metrics.py
+    ├── test_diagnostics.py
+    └── test_pipeline.py
 ```
 
 运行测试：
 
 ```bash
-pytest -q
+pytest -q -W error
 ```
