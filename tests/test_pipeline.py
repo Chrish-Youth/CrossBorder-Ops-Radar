@@ -20,10 +20,21 @@ from src.config import (
     REQUIRED_COLUMNS,
     SPEND_WITHOUT_ORDERS,
 )
-from src.diagnostics import DiagnosticsError
+from src.diagnostics import DIAGNOSTIC_ISSUE_COLUMNS, DiagnosticsError
 from src.loader import DataLoadError
-from src.metrics import BASE_MEASURES, DERIVED_METRICS, MetricsCalculationError
-from src.pipeline import PipelineResult, PipelineStatus, run_pipeline
+from src.metrics import (
+    BASE_MEASURES,
+    DERIVED_METRICS,
+    RATIO_METRICS,
+    MetricsCalculationError,
+)
+from src.pipeline import (
+    INVALID_STAGE_RESULT,
+    PipelineError,
+    PipelineResult,
+    PipelineStatus,
+    run_pipeline,
+)
 from src.validator import (
     ValidationReport,
     ValidationResult,
@@ -33,6 +44,36 @@ from src.validator import (
 SAMPLE_PATH = (
     Path(__file__).parents[1] / "data" / "sample_ecommerce_data.csv"
 )
+
+
+class NamedBytesIO(BytesIO):
+    def __init__(self, content: bytes, name: str) -> None:
+        super().__init__(content)
+        self.name = name
+
+
+class ReadOnceStream:
+    name = "upload.csv"
+
+    def __init__(self, content: bytes) -> None:
+        self._content = content
+        self._consumed = False
+
+    def read(self) -> bytes:
+        if self._consumed:
+            return b""
+        self._consumed = True
+        return self._content
+
+
+class BrokenSeekStream:
+    name = "upload.csv"
+
+    def read(self) -> bytes:
+        return b"unreachable"
+
+    def seek(self, position: int) -> None:
+        raise OSError("stream is not seekable")
 
 
 def make_row(**overrides: object) -> dict[str, object]:
@@ -128,6 +169,83 @@ def test_execution_order_and_stage_results_are_passed_by_identity(
     assert result.diagnostics is diagnostics
 
 
+def test_invalid_validation_result_raises_pipeline_error_and_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    downstream_calls: list[str] = []
+
+    def must_not_calculate(*args: object, **kwargs: object) -> None:
+        downstream_calls.append("metrics")
+
+    def must_not_diagnose(*args: object, **kwargs: object) -> None:
+        downstream_calls.append("diagnostics")
+
+    monkeypatch.setattr(pipeline_module, "validate_dataframe", lambda _: None)
+    monkeypatch.setattr(
+        pipeline_module,
+        "calculate_metrics",
+        must_not_calculate,
+    )
+    monkeypatch.setattr(
+        pipeline_module,
+        "diagnose_metrics",
+        must_not_diagnose,
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        run_pipeline(csv_content(make_row()), filename="input.csv")
+
+    assert exc_info.value.code == INVALID_STAGE_RESULT
+    assert exc_info.value.stage == "validation"
+    assert "validate_dataframe" in exc_info.value.message
+    assert "ValidationResult" in exc_info.value.message
+    assert downstream_calls == []
+
+
+def test_invalid_metrics_result_raises_pipeline_error_and_stops_diagnostics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    diagnostics_called = False
+
+    def must_not_diagnose(*args: object, **kwargs: object) -> None:
+        nonlocal diagnostics_called
+        diagnostics_called = True
+
+    monkeypatch.setattr(pipeline_module, "calculate_metrics", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        pipeline_module,
+        "diagnose_metrics",
+        must_not_diagnose,
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        run_pipeline(csv_content(make_row()), filename="input.csv")
+
+    assert exc_info.value.code == INVALID_STAGE_RESULT
+    assert exc_info.value.stage == "metrics"
+    assert "calculate_metrics" in exc_info.value.message
+    assert "DataFrame" in exc_info.value.message
+    assert diagnostics_called is False
+
+
+def test_invalid_diagnostics_result_raises_pipeline_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        pipeline_module,
+        "diagnose_metrics",
+        lambda _dataframe: None,
+    )
+
+    with pytest.raises(PipelineError) as exc_info:
+        run_pipeline(csv_content(make_row()), filename="input.csv")
+
+    assert exc_info.value.code == INVALID_STAGE_RESULT
+    assert exc_info.value.stage == "diagnostics"
+    assert "diagnose_metrics" in exc_info.value.message
+    assert "DataFrame" in exc_info.value.message
+
+
 def test_validation_fatal_short_circuits_metrics_and_diagnostics(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -208,6 +326,46 @@ def test_loader_failures_propagate_unchanged(
         run_pipeline(source, filename=filename)
 
     assert exc_info.value.code == expected_code
+
+
+def test_explicit_filename_overrides_path_suffix() -> None:
+    with pytest.raises(DataLoadError) as exc_info:
+        run_pipeline(SAMPLE_PATH, filename="override.xlsx")
+
+    assert exc_info.value.code == "FILE_READ_ERROR"
+
+
+def test_explicit_filename_overrides_file_like_name() -> None:
+    source = NamedBytesIO(csv_content(make_row()), "actual.csv")
+
+    with pytest.raises(DataLoadError) as exc_info:
+        run_pipeline(source, filename="override.xlsx")
+
+    assert exc_info.value.code == "FILE_READ_ERROR"
+
+
+def test_file_like_name_is_used_when_explicit_filename_is_absent() -> None:
+    source = NamedBytesIO(csv_content(make_row()), "actual.csv")
+
+    result = run_pipeline(source, group_by="sku")
+
+    assert result.status is PipelineStatus.SUCCESS
+    assert result.metrics is not None
+    assert result.metrics["sku"].tolist() == ["SKU-A"]
+
+
+def test_bytes_without_filename_do_not_trigger_format_sniffing() -> None:
+    with pytest.raises(DataLoadError) as exc_info:
+        run_pipeline(csv_content(make_row()))
+
+    assert exc_info.value.code == "UNSUPPORTED_FILE_TYPE"
+
+
+def test_csv_bytes_with_xlsx_filename_are_not_sniffed_as_csv() -> None:
+    with pytest.raises(DataLoadError) as exc_info:
+        run_pipeline(csv_content(make_row()), filename="upload.xlsx")
+
+    assert exc_info.value.code == "FILE_READ_ERROR"
 
 
 def test_validation_error_excludes_bad_row_and_continues_pipeline() -> None:
@@ -299,19 +457,57 @@ def test_all_rows_excluded_without_fatal_returns_successful_empty_results() -> N
         *BASE_MEASURES,
         *DERIVED_METRICS,
     ]
+    assert result.metrics["sku"].dtype == result.validation.clean_data["sku"].dtype
+    assert all(
+        str(result.metrics[column].dtype) == "Int64"
+        for column in (
+            "impressions",
+            "clicks",
+            "orders",
+            "units_sold",
+            "refunds",
+            "inventory",
+        )
+    )
+    assert all(
+        str(result.metrics[column].dtype) == "Float64"
+        for column in ("sales", "ad_spend", "gmv")
+    )
+    assert all(
+        str(result.metrics[column].dtype) == "float64"
+        for column in RATIO_METRICS
+    )
+    assert isinstance(result.metrics.index, pd.RangeIndex)
     assert result.diagnostics is not None
     assert result.diagnostics.empty
-    assert result.diagnostics.columns[:1].tolist() == ["sku"]
+    assert result.diagnostics.columns.tolist() == [
+        "sku",
+        *DIAGNOSTIC_ISSUE_COLUMNS,
+    ]
+    assert result.diagnostics["sku"].dtype == result.metrics["sku"].dtype
+    assert all(
+        str(result.diagnostics[column].dtype) == "object"
+        for column in ("code", "severity", "metric", "evidence", "message")
+    )
+    assert all(
+        str(result.diagnostics[column].dtype) == "Float64"
+        for column in ("actual_value", "threshold")
+    )
+    assert isinstance(result.diagnostics.index, pd.RangeIndex)
 
 
 @pytest.mark.parametrize(
     ("group_by", "dimensions", "expected_rows"),
     [
         (None, [], 1),
+        ([], [], 1),
+        ((), [], 1),
         ("sku", ["sku"], 12),
         ("marketplace", ["marketplace"], 2),
         ("country", ["country"], 2),
         (["marketplace", "country"], ["marketplace", "country"], 3),
+        (("marketplace", "country"), ["marketplace", "country"], 3),
+        (("country", "marketplace"), ["country", "marketplace"], 3),
         (
             ["marketplace", "country", "sku"],
             ["marketplace", "country", "sku"],
@@ -324,11 +520,15 @@ def test_all_rows_excluded_without_fatal_returns_successful_empty_results() -> N
         ),
     ],
     ids=[
-        "overall",
+        "overall-none",
+        "overall-list",
+        "overall-tuple",
         "sku",
         "marketplace",
         "country",
-        "marketplace-country",
+        "marketplace-country-list",
+        "marketplace-country-tuple",
+        "tuple-order-preserved",
         "marketplace-country-sku",
         "full-business-key",
     ],
@@ -372,6 +572,42 @@ def test_bytes_and_file_like_sources_use_loader_filename_contract() -> None:
     assert byte_result.metrics is not None
     assert file_result.metrics is not None
     pd.testing.assert_frame_equal(byte_result.metrics, file_result.metrics)
+
+
+def test_seekable_file_like_is_rewound_for_reuse_and_left_at_end() -> None:
+    content = csv_content(make_row())
+    source = BytesIO(content)
+    source.seek(7)
+
+    first = run_pipeline(source, filename="upload.csv", group_by="sku")
+    first_end_position = source.tell()
+    second = run_pipeline(source, filename="upload.csv", group_by="sku")
+
+    assert first.status is PipelineStatus.SUCCESS
+    assert second.status is PipelineStatus.SUCCESS
+    assert first_end_position == len(content)
+    assert source.tell() == len(content)
+    assert first.metrics is not None and second.metrics is not None
+    pd.testing.assert_frame_equal(first.metrics, second.metrics)
+
+
+def test_non_seekable_stream_is_consumed_and_not_reusable() -> None:
+    source = ReadOnceStream(csv_content(make_row()))
+
+    first = run_pipeline(source, group_by="sku")  # type: ignore[arg-type]
+
+    assert first.status is PipelineStatus.SUCCESS
+    with pytest.raises(DataLoadError) as exc_info:
+        run_pipeline(source, group_by="sku")  # type: ignore[arg-type]
+    assert exc_info.value.code == "EMPTY_FILE"
+
+
+def test_broken_seek_is_loader_file_read_error() -> None:
+    with pytest.raises(DataLoadError) as exc_info:
+        run_pipeline(BrokenSeekStream(), group_by="sku")  # type: ignore[arg-type]
+
+    assert exc_info.value.code == "FILE_READ_ERROR"
+    assert isinstance(exc_info.value.__cause__, OSError)
 
 
 def test_xlsx_source_runs_through_complete_pipeline() -> None:

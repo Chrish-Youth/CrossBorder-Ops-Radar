@@ -13,12 +13,21 @@ V1 不接入任何大模型 API，不使用数据库，也不包含登录或权�
 - Phase 3.1 completed：CSV NUL、Loader/Metrics 异常边界、容器型 Extra Column 和关键指标回归测试已加固。
 - Phase 4 Diagnostics Engine completed：Demo 默认阈值、最小样本门槛和七条确定性经营诊断规则已实现。
 - Phase 5 Pipeline Orchestration completed：Loader、Validator、Metrics 和 Diagnostics 已通过统一入口顺序串联。
-- Phase 6 not started：报表、Excel 导出和 Streamlit 页面业务逻辑尚未实现。
+- Phase 5.1 Pipeline Contract Hardening completed：阶段返回类型、filename 优先级、file-like 指针语义和 Pipeline 空结果契约已加固。
+- Phase 6 Report & Excel Export completed：独立 ReportData、固定四 Sheet 的 Excel bytes 导出和展示格式契约已实现。
+- Phase 6.1 Report Integrity Hardening completed：Excel 文本、日期列、快照一致性、Evidence 复杂度、行数和整数精度边界已加固。
+- Phase 7 Streamlit Application Layer completed：上传、分析粒度、显式运行、结果展示、结构化错误和 Excel 下载闭环已实现。
+- Phase 7.1 Application Reliability Hardening completed：下载文件名 UTF-8 长度、Unexpected Exception 服务端日志和 Session State 回归契约已加固。
+- Phase 8 not started：LLM、AI Insight、Root Cause 与自动运营建议均未实现。
 
 当前已实现的数据流为：
 
 ```text
-Raw File
+User Upload
+   ↓
+Streamlit Application
+   ↓
+Raw File Bytes + Filename + Analysis Level
    ↓
 Loader
    ↓
@@ -35,6 +44,10 @@ Aggregated Metrics DataFrame
 Diagnostics Engine
    ↓
 Structured Diagnostics DataFrame
+   ↓
+Report Model
+   ↓
+Excel Workbook Bytes
 ```
 
 ## 项目目标
@@ -45,7 +58,7 @@ Structured Diagnostics DataFrame
 - 使用透明、可配置的规则识别经营异常。
 - 在页面展示结果并生成可下载的中文 Excel 运营报表。
 
-SKU 指标聚合已在 Phase 3 实现，确定性规则诊断已在 Phase 4 实现，统一业务入口已在 Phase 5 实现；页面、报表和导出属于 Phase 6 及之后的计划，当前尚未实现。
+SKU 指标聚合已在 Phase 3 实现，确定性规则诊断已在 Phase 4 实现，统一业务入口已在 Phase 5 实现，Report Model 与 Excel 导出已在 Phase 6 实现，并已在 Phase 6.1 完成完整性加固；Phase 7 已提供可直接使用的 Streamlit 单页应用。Phase 8 尚未开始。
 
 ## 输入数据契约
 
@@ -258,7 +271,7 @@ impressions, clicks, orders, units_sold, sales, ad_spend, refunds
 - `refunds` 继续表示退款订单数，而不是退款金额。
 - Warning 数据正常参与计算。CVR 和 Refund Rate 可以大于 1，不做 clipping。
 - Metrics 不 Round、不乘以 100，也不返回百分号、货币符号、`—` 或 `N/A`。
-- 内部零分母结果保持 `NaN`；未来 UI 计划显示为 `—`，Excel 报告计划保持为空白单元格。
+- 内部零分母结果保持 `NaN`；未来 UI 计划显示为 `—`，Phase 6 Excel 报告保持为空白单元格。
 - 日期保持 Python `datetime.date`，不会重新转换为 `datetime64[ns]`。
 
 Metrics 接口使用 `MetricsCalculationError` 和稳定 Code：
@@ -353,8 +366,10 @@ run_pipeline(
 ) -> PipelineResult
 ```
 
-- `source` 原样传递给 Loader，支持现有 Loader 接受的 Path、bytes、bytearray 和 file-like object。
-- Path 或带 `.name` 的 file-like object 可以由 Loader 推断文件类型；无文件名的 bytes 或 file-like object 应通过 `filename` 指定 `.csv` 或 `.xlsx`。
+- `source` 原样传递给 Loader，支持现有 Loader 接受的 str/Path、bytes、bytearray 和 file-like object。
+- 文件类型解析优先级固定为：显式 `filename` > str/Path 自身后缀 > file-like object 的 `.name`。显式 `filename` 与 source 名称冲突时，始终以显式值为准。
+- bytes 或没有 `.name` 的 file-like object 必须通过 `filename` 指定 `.csv` 或 `.xlsx`；否则 Loader 返回 `UNSUPPORTED_FILE_TYPE`。
+- V1 不根据内容猜测文件格式。例如 CSV bytes 配合 `filename="upload.xlsx"` 时按 XLSX 解析，失败时返回 `FILE_READ_ERROR`，不会回退为 CSV。
 - `group_by` 原样传递给 `calculate_metrics()`；Pipeline 不追加维度、不改变顺序，也不自行解释 Overall。`None` 表示 Overall，合法维度仍只有 `date`、`marketplace`、`country`、`sku`。
 
 固定执行顺序为：
@@ -368,6 +383,30 @@ load_file(source, filename)
 ```
 
 Diagnostics 只接收当前 Pipeline 调用产生的 Metrics DataFrame，不接收 Raw DataFrame 或 Clean DataFrame。Pipeline 不修改任何阶段输出，也不会向下层 DataFrame 增加状态列。
+
+### Pipeline Structural Contract Validation
+
+Pipeline 只检查三个阶段最基本的返回类型：
+
+```text
+validate_dataframe(...) → ValidationResult
+calculate_metrics(...)  → pandas.DataFrame
+diagnose_metrics(...)    → pandas.DataFrame
+```
+
+返回类型不符时直接抛出 `PipelineError`，不返回 PipelineResult，也不继续执行后续阶段。Pipeline 不检查 CTR、dtype、诊断 Code、Threshold、Validation 行数或其他业务内容，因此不会形成第二套 Validator、Metrics Validator 或 Diagnostics Validator。
+
+`PipelineError` 仅表示 Pipeline 自身发现的阶段返回契约违规：
+
+```python
+PipelineError(
+    code="INVALID_STAGE_RESULT",
+    stage="validation" | "metrics" | "diagnostics",
+    message="...",
+)
+```
+
+V1 只有一个稳定 Pipeline Error Code：`INVALID_STAGE_RESULT`。`stage` 用于标识违反返回类型契约的阶段。文件损坏、非法 group_by 和 Diagnostics 输入问题继续使用其所属模块的既有异常，不转换为 PipelineError。
 
 ### PipelineResult
 
@@ -387,6 +426,9 @@ PipelineResult(
 - `validation` 保留 ValidationResult，因此 Clean DataFrame 和完整 Validation Report 仍可访问。
 - `metrics` 和 `diagnostics` 保存下游实际返回对象，不复制或改造 DataFrame。
 - PipelineResult 不额外保存 Raw DataFrame，也不重复保存 `validation.clean_data`，避免产生多个状态来源。
+- `frozen=True` 只阻止 PipelineResult 属性被重新赋值，不会使内部 Pandas DataFrame 不可变；Pipeline 不为此深拷贝阶段结果，后续调用者应按约定将其视为只读输入。
+
+`SUCCESS` 现在精确定义为：文件加载成功；Validator 返回合法 ValidationResult 且没有 Fatal；Metrics 返回 DataFrame；Diagnostics 返回 DataFrame。`SUCCESS` 不代表没有 Error rows、Warning 或 Diagnostic Issues。
 
 ### Validation Continuation 与 Short-circuit
 
@@ -399,6 +441,16 @@ PipelineResult(
 
 Pipeline 不会把空 Clean DataFrame 制造为虚假的 Overall 全零行。Fatal short-circuit 后不会调用 Metrics 或 Diagnostics；Metrics 失败后也不会调用 Diagnostics。
 
+`VALIDATION_FAILED` 只用于合法 ValidationResult 中存在 Fatal 的情况，不用于 Loader failure、Metrics failure、Diagnostics failure 或 invalid stage result。
+
+### File-like Pointer Semantics
+
+- Seekable file-like object 在每次读取前都会执行 `seek(0)`，因此同一对象可以连续运行多次 Pipeline。
+- 调用完成后指针停留在读取结束位置，不恢复调用前的位置。
+- Non-seekable stream 会在读取时被消费，不保证能够用于第二次 Pipeline 调用；已消费的第二次调用可以返回 `EMPTY_FILE`。
+- 对象存在 `.seek()` 但 seek 失败时，保持 Loader 契约并返回 `DataLoadError(code="FILE_READ_ERROR")`。
+- Pipeline 不缓存 stream、不复制为临时文件，也不额外恢复指针。
+
 ### Pipeline Exception Boundary
 
 Pipeline 不捕获并统一包装下层已经冻结的结构化异常：
@@ -408,9 +460,219 @@ Loader Failure       → DataLoadError 原样传播
 Validation Fatal     → PipelineResult(status=VALIDATION_FAILED)
 Metrics Failure      → MetricsCalculationError 原样传播
 Diagnostics Failure  → DiagnosticsError 原样传播
+Invalid Stage Result → PipelineError(code=INVALID_STAGE_RESULT, stage=...)
 ```
 
 因此 Diagnostics 失败不会返回 `SUCCESS + diagnostics=None` 这样的部分成功结果。相同 source 内容和相同 `group_by` 会产生稳定的 status、Validation、Metrics 和 Diagnostics 结果。
+
+## Report & Excel Export
+
+Report Layer 只接受已经完成编排的 `PipelineResult`，把现有 Validation、Metrics 和 Diagnostics 结果转换为展示模型与 Excel workbook。它不读取原始文件，不调用 Loader、Validator、Metrics 或 Diagnostics，也不重新计算业务公式、库存快照或诊断阈值。核心原则是：
+
+```text
+Compute once, present many
+```
+
+公共接口：
+
+```python
+build_report_data(
+    pipeline_result: PipelineResult,
+) -> ReportData
+
+generate_excel_report(
+    report_data: ReportData,
+) -> bytes
+```
+
+- `build_report_data()` 对非 `PipelineResult` 或结构上不一致的 PipelineResult 抛出 `ReportError(code="INVALID_REPORT_INPUT")`。
+- `generate_excel_report()` 对非 `ReportData` 或结构上非法的 ReportData 抛出 `ReportError(code="INVALID_REPORT_DATA")`。
+- openpyxl 或 workbook 写入的普通异常包装为 `ReportError(code="EXCEL_EXPORT_ERROR")` 并保留 exception chaining；已有 `ReportError` 原样传播。
+- Excel 完全在内存中生成并返回 `.xlsx` bytes，不在 Report API 内写入固定本地路径。
+
+Phase 6.1 新增的稳定 Report Error Code 为：
+
+| Code | 含义 |
+| --- | --- |
+| `EXCEL_CELL_TEXT_TOO_LONG` | 准备写入 Cell 的文本超过 Excel 的 32,767 字符上限 |
+| `INCONSISTENT_REPORT_DATA` | Summary 可重建统计与 Detail 快照不一致 |
+| `EXCEL_ROW_LIMIT_EXCEEDED` | 表格数据行超过 1,048,575 行（另含一行 Header） |
+
+### ReportData
+
+Phase 6 使用冻结的独立展示模型：
+
+```python
+@dataclass(frozen=True)
+class ReportData:
+    summary: pandas.DataFrame
+    validation_issues: pandas.DataFrame
+    metrics: pandas.DataFrame | None
+    diagnostics: pandas.DataFrame | None
+```
+
+- `summary` 是机器可读的报告概览。
+- `validation_issues` 是 ValidationReport 中 Fatal、Error、Warning 的统一表格。
+- `metrics` 和 `diagnostics` 是对应 Pipeline DataFrame 的 presentation copy；`VALIDATION_FAILED` 时为 `None`。
+- object dtype 中的可变对象（例如 Diagnostics `evidence` dict）也会复制。修改 ReportData 或生成 Excel 不会反向修改 PipelineResult、ValidationResult、Metrics 或 Diagnostics。
+
+### Workbook Contract
+
+无论 Pipeline 状态如何，Sheet 名称和顺序固定为：
+
+```text
+Summary
+Validation Issues
+Metrics
+Diagnostics
+```
+
+不导出 Raw Data、Clean Data、Threshold/Config Sheet，不添加动态生成时间、Charts、Dashboard、条件格式、Severity 颜色、Root Cause 或运营建议。表格 Sheet 使用加粗表头、冻结首行、Auto Filter、受上限约束的列宽；长 `message` 和 `evidence` 使用自动换行。
+
+### Report Integrity 与 Excel 边界
+
+- Excel Cell 文本最大允许 32,767 个字符。所有字符串（包括序列化后的 Evidence JSON）均在赋值前检查；32,767 个字符完整导出，32,768 个及以上以 `EXCEL_CELL_TEXT_TOO_LONG` 明确失败，不截断、不拆分、不改写。
+- Validation Issues、Metrics、Diagnostics 每张表最多 1,048,575 个数据行，另含一行 Header。行数在创建大量 Cell 前检查，超限以 `EXCEL_ROW_LIMIT_EXCEEDED` 失败，不分页、不截断。
+- Evidence 最大嵌套深度固定为 20。深度 20 可以导出，深度 21 或循环引用以 `INVALID_REPORT_DATA` 明确失败，不依赖 Python `RecursionError`。普通 Evidence 继续使用 `ensure_ascii=False`、`sort_keys=True` 的确定性 JSON。
+- 任何准备写入 Excel 的字符串都强制保持 text 类型。以 `=`、`+`、`-` 或 `@` 开头的 SKU、message 等业务文本保持原值且不会成为 Excel 公式；Report 不添加前导单引号。
+- `NaN`、`pd.NA` 和 `None` 写为空白 Cell；有效数值 `0` 保持 numeric zero。
+
+`SUCCESS` 和 `VALIDATION_FAILED` 的含义保持 Pipeline 契约：
+
+| Pipeline 结果 | Metrics Sheet | Diagnostics Sheet |
+| --- | --- | --- |
+| `SUCCESS` 且有数据 | 保留原 Metrics 列、行和值 | 保留原 Diagnostics 列、行和值 |
+| `SUCCESS` 但所有行被排除 | 稳定 Schema、Header、0 数据行 | 稳定 Schema、Header、0 数据行 |
+| `SUCCESS` 且无 Diagnostic Issue | 正常 Metrics 表 | 稳定 Schema、Header、0 数据行 |
+| `VALIDATION_FAILED` | `Not generated because validation failed.` | `Not generated because validation failed.` |
+
+### Summary Schema
+
+Summary 固定使用：
+
+```text
+Section, Item, Value
+```
+
+基础行固定包含 Pipeline Status、Raw Rows、Valid Rows、Excluded Rows、Warning Rows、Fatal Issues、Error Issues、Warning Issues、Metrics Groups 和 Diagnostic Issues。随后按 ValidationReport 与 Diagnostics 的稳定出现顺序追加实际存在的 Validation Code Counts 和 Diagnostic Code Counts；不存在的 Code 不生成零值行。计数保持 Excel numeric integer，状态和 Code 保持 text，不添加时间戳。
+
+`generate_excel_report()` 在导出前重新统计可由当前 Detail 明确定义的快照：Fatal/Error/Warning Issues、Metrics Groups、Diagnostic Issues、Validation Code Counts 和 Diagnostic Code Counts，并按冻结顺序与 Summary 比较。任何漂移均以 `INCONSISTENT_REPORT_DATA` 失败。该检查不重新计算 CTR、CVR、ROAS、GMV、Inventory 或 Diagnostic Rules，也不重建 Raw Rows、Valid Rows、Excluded Rows 和 Warning Rows；后四项继续保留构建 ReportData 时的 Snapshot 语义，尤其不会把 Warning Rows 误定义为 Warning Issues 数量。
+
+### Validation Issues
+
+Validation Issues 固定列顺序为：
+
+```text
+level, code, row, field, message
+```
+
+Issue 顺序直接沿用 `ValidationReport.issues`，即 Validator 已冻结的 Fatal、Error、Warning 汇总顺序；Report 不重新排序。没有 Issue 时保留 Header 和零数据行，不制造 `NO ISSUES` 记录。缺失的 `row` 或 `field` 在 Excel 中显示为空白。
+
+### Metrics Excel Formatting
+
+Metrics Sheet 直接保留 Phase 3 DataFrame 的列顺序、行顺序和真实数值。Report 不提前 Round、不乘以 100，也不把数值转换成带符号字符串：
+
+| 类别 | 字段 | Excel number format |
+| --- | --- | --- |
+| Count | `impressions`, `clicks`, `orders`, `units_sold`, `refunds`, `inventory` | `#,##0` |
+| USD | `sales`, `ad_spend`, `gmv`, `aov`, `cpc`, `cpa` | `$#,##0.00` |
+| Percentage | `ctr`, `cvr`, `refund_rate` | `0.00%` |
+| Multiple | `roas` | `0.00x` |
+| Date | `date` | `yyyy-mm-dd` |
+
+`NaN`、`pd.NA` 和 `None` 写为空白 Cell；有效业务值 `0` 仍写为 numeric zero，并按对应格式显示为 `0`、`$0.00` 或 `0.00%`。
+
+Excel numeric cell 不能精确保存所有整数。对任意整数字段按值保护：`abs(integer) <= 9007199254740991`（即 `2**53 - 1`）时保持 numeric；超出该范围时使用完整十进制 text 回退。该规则不限于 Count 字段，可避免例如 `9007199254740993` 被静默改成 `9007199254740992`。Pipeline 与 ReportData 中的值保持不变，只有 Excel presentation 使用该无损回退；重新打开 Workbook 后回退值仍为字符串，不会被保存成科学计数或发生舍入。
+
+日期导出采用整列一致模式。如果同一 `date` 列的全部日期均在 `1900-01-01` 至 `9999-12-31`，整列写为 native Excel Date，并使用 `yyyy-mm-dd` number format；只要该列包含一个需要 fallback 的日期（例如 `1600-01-01`），整列全部写为 ISO `YYYY-MM-DD` text，包括原本安全的 `2026-08-27` 与 `9999-12-31`。同一日期列不会混用 native date 与 text。该选择只发生在 Excel presentation，不修改 Pipeline 或 ReportData 中的 Python `datetime.date`。
+
+### Diagnostics Excel Formatting
+
+Diagnostics Sheet 保留 Phase 4 的 Group Dimensions 与固定 Issue Columns：
+
+```text
+group dimensions
+→ code, severity, metric, actual_value, threshold, evidence, message
+```
+
+`actual_value` 和 `threshold` 根据同一行的 `metric` 设置格式：CTR/CVR/Refund Rate 使用百分比，ROAS 使用倍数，Orders/Inventory 等 Count 使用整数。真实 numeric value 不变。`evidence` 使用 `json.dumps(..., ensure_ascii=False, sort_keys=True)` 的确定性 JSON 表示，并把其中的 Python date、NumPy/Pandas scalar、`pd.NA` 和 NaN 安全转换为 JSON date/text、原生 scalar 或 `null`；原 dict 不被修改。`None` evidence 写为空白。`message` 直接保留 Phase 4 原文，不改写、不追加 Root Cause 或运营建议。
+
+## Streamlit Application
+
+安装依赖后，在项目根目录启动：
+
+```bash
+streamlit run app.py
+```
+
+Phase 7 是单页面应用，固定完成以下流程：
+
+```text
+Upload CSV/XLSX
+→ Select Analysis Level
+→ Run Analysis
+→ Validation / Metrics / Diagnostic Signals
+→ Download Excel Report
+```
+
+应用只负责上传、参数映射、调用、展示、Session State 和错误呈现。上传内容以原始 bytes 和显式 filename 传给 `run_pipeline()`；UI 不使用 Pandas 自行读取上传文件、不猜测文件格式，也不重新实现 Validation、Metrics、Inventory、Diagnostic Threshold 或 Excel 数据构建。
+
+### Analysis Level
+
+默认分析粒度为 `SKU`。V1 使用固定选项，不提供自由维度编辑：
+
+| UI Option | `group_by` |
+| --- | --- |
+| `Overall` | `None` |
+| `SKU` | `["sku"]` |
+| `Marketplace` | `["marketplace"]` |
+| `Country` | `["country"]` |
+| `Marketplace + Country` | `["marketplace", "country"]` |
+| `Marketplace + Country + SKU` | `["marketplace", "country", "sku"]` |
+| `Date + Marketplace + Country + SKU` | `["date", "marketplace", "country", "sku"]` |
+
+上传文件后不会自动执行分析。只有点击 `Run Analysis` 才调用 Pipeline、构建 ReportData 并生成一次 Excel bytes。当前 session 保存 analysis signature、PipelineResult、ReportData、Excel bytes、ReportError 和安全下载文件名；signature 包含 filename、文件 bytes SHA-256 和 `group_by`。文件内容、文件名或分析粒度变化时，旧结果立即失效，必须重新点击运行。应用不使用数据库、磁盘缓存或跨 Session 历史记录。
+
+每次新的 `Run Analysis` 在调用 Pipeline 前都会清理上一轮的 execution state，包括 PipelineResult、ReportData、Excel bytes、AnalysisError、ReportError 和下载文件名。上传内容、文件名或 Analysis Level 变化产生的 rerun 也会在结果渲染前使旧状态失效；因此旧 Metrics、Diagnostics 或 Workbook 不会短暂成为新输入的当前结果。Report 失败只隔离 Excel 下载，不清除同一轮已经成功产生的 Validation、Metrics 和 Diagnostics；下一次成功运行会清除旧错误。Download Button 始终只使用当前 analysis signature 对应的 Excel bytes。
+
+### Validation、Metrics 与 Diagnostic Signals
+
+- Validation 直接展示 Raw Rows、Valid Rows、Excluded Rows、Warning Rows，以及 Fatal/Error/Warning Issue 数量和完整 `level/code/row/field/message` 表格。
+- `VALIDATION_FAILED` 是合法结果：页面显示 Fatal 和 Validation Issues，不显示虚假 Metrics/Diagnostics，但仍尝试生成并提供 Validation Failed Excel。
+- Metrics 保持 Engine 的行列顺序，不重新计算、不排序、不修改原 DataFrame。展示副本中 Percentage 使用 `0.00%`、USD 使用 `$#,##0.00`、ROAS 使用 `0.00x`；`NaN` 显示为 `—`，有效零值分别显示为 `0.00%`、`$0.00` 或 `0.00x`。
+- Diagnostic Signals 保留全部 Group Context、Code、Severity、Metric、Actual Value、Threshold、Evidence 和 Message；同一 Group 的多条 Issue 不合并。没有 Issue 时显示明确 empty state，不制造 `NORMAL` 记录。
+- 页面持续声明 Diagnostic Signals 使用 Demo Default Thresholds，并非行业标准，也不代表 Root Cause 或运营建议。
+
+### Application Error Boundary
+
+UI 结构化区分并展示稳定 Code：
+
+| Exception | UI heading |
+| --- | --- |
+| `DataLoadError` | `File could not be loaded.` |
+| `PipelineError` | `Internal pipeline contract error.`，同时显示 stage |
+| `MetricsCalculationError` | `Metrics calculation failed.` |
+| `DiagnosticsError` | `Diagnostics failed.` |
+| `ReportError` | `Excel report could not be generated.` |
+| 其他 `Exception` | `Unexpected application error.`，不展示 traceback 或原始内部文本 |
+
+Pipeline/Diagnostics 失败不会伪装为 SUCCESS。Report 生成失败不会清除已经成功产生的 Validation、Metrics 和 Diagnostics，只隐藏 Download Button 并在 Excel Report 区域显示 Report Error。`KeyboardInterrupt` 和 `SystemExit` 不在普通 Exception boundary 内。
+
+已知的 `DataLoadError`、`PipelineError`、`MetricsCalculationError`、`DiagnosticsError` 和 `ReportError` 按既有结构化路径展示，不记录为 unexpected server failure。其他未预期的 application/report exception 使用 Python 标准 `logger.exception(...)` 在服务器侧记录 exception 与 traceback；UI 仍只显示稳定的通用 Code 和安全消息，不显示原始异常文本、traceback、文件路径或行号。应用不在日志中写入上传 bytes、完整 DataFrame 或业务数据内容，且不在模块 import 时配置全局 logging handler。
+
+### Excel Download 与 V1 Scope
+
+下载 MIME 固定为：
+
+```text
+application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+```
+
+下载名使用上传文件 basename 和去扩展名后的安全 stem，例如 `amazon.data.csv` 生成 `amazon.data_crossborder_ops_radar.xlsx`；无法获得安全 stem 时使用 `crossborder_ops_radar_report.xlsx`。固定后缀为 `_crossborder_ops_radar.xlsx`，最终文件名上限固定为 180 UTF-8 bytes。超长名称只对 sanitized stem 做 deterministic UTF-8 字符边界截断，不截断固定后缀，不生成非法 UTF-8，也不添加 timestamp、UUID 或随机值。默认文件名同样满足该 byte limit。Excel bytes 直接来自现有 Report Layer，后续 Streamlit rerun 不重复生成。
+
+Excel 仍受 Phase 6.1 契约约束：单元格文本最多 32,767 字符；表格最多 1,048,575 个数据行加 Header；包含 pre-1900 日期时整个日期列使用 ISO text fallback。达到限制时明确失败，不截断、不分页。
+
+Phase 7 不展示 Raw/Clean Data，不提供 Threshold Editor、Charts、Dashboard Visualization、LLM、AI Insight、Root Cause、自动运营建议、账号、数据库或历史报告。
 
 ## 样例数据
 
@@ -420,7 +682,7 @@ Diagnostics Failure  → DiagnosticsError 原样传播
 
 ```text
 CrossBorder Ops Radar/
-├── app.py                       # Phase 6 及之后占位
+├── app.py                       # Phase 7 Streamlit 单页应用与纯展示 helper
 ├── README.md
 ├── requirements.txt
 ├── data/
@@ -432,14 +694,16 @@ CrossBorder Ops Radar/
 │   ├── validator.py             # 数据校验、清洗结果与结构化报告
 │   ├── metrics.py               # Base Measures、库存快照与八项指标
 │   ├── diagnostics.py           # Demo 阈值、七条规则与结构化诊断结果
-│   ├── report.py                # Phase 6 及之后占位
+│   ├── report.py                # ReportData 与固定四 Sheet 的 Excel bytes 导出
 │   └── pipeline.py              # 顺序编排与结构化 PipelineResult
 └── tests/
     ├── test_loader.py
     ├── test_validator.py
     ├── test_metrics.py
     ├── test_diagnostics.py
-    └── test_pipeline.py
+    ├── test_pipeline.py
+    ├── test_report.py
+    └── test_app.py
 ```
 
 运行测试：
