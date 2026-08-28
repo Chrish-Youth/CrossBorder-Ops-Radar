@@ -14,7 +14,21 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src.deepseek_provider import DEEPSEEK_MODEL, DeepSeekInsightProvider
 from src.diagnostics import DiagnosticsError
+from src.insight_prompt import (
+    INSIGHT_OUTPUT_VERSION,
+    INSIGHT_PROMPT_VERSION,
+    InsightOutput,
+    InsightOutputError,
+    InsightPromptError,
+)
+from src.insight_provider import InsightProviderError, generate_insight
+from src.insights import (
+    INSIGHT_CONTEXT_VERSION,
+    InsightContextError,
+    build_insight_context,
+)
 from src.loader import DataLoadError
 from src.metrics import MetricsCalculationError
 from src.pipeline import PipelineError, PipelineResult, PipelineStatus, run_pipeline
@@ -50,7 +64,7 @@ GROUP_BY_OPTIONS: dict[str, list[str] | None] = {
     ],
 }
 
-_SESSION_DEFAULTS: dict[str, Any] = {
+_ANALYSIS_SESSION_DEFAULTS: dict[str, Any] = {
     "analysis_signature": None,
     "pipeline_result": None,
     "report_data": None,
@@ -58,6 +72,82 @@ _SESSION_DEFAULTS: dict[str, Any] = {
     "report_error": None,
     "analysis_error": None,
     "download_filename": None,
+}
+
+_AI_SESSION_DEFAULTS: dict[str, Any] = {
+    "ai_output": None,
+    "ai_error_code": None,
+    "ai_error_message": None,
+    "ai_signature": None,
+}
+
+_SESSION_DEFAULTS: dict[str, Any] = {
+    **_ANALYSIS_SESSION_DEFAULTS,
+    **_AI_SESSION_DEFAULTS,
+}
+
+_AI_RESULT_REJECTION_CODES: frozenset[str] = frozenset(
+    {
+        "INVALID_PROVIDER",
+        "INVALID_PROVIDER_RESPONSE",
+        "PROVIDER_RESPONSE_TOO_LARGE",
+        "INVALID_PROVIDER_JSON",
+        "INVALID_INSIGHT_OUTPUT",
+        "OUTPUT_TOO_LARGE",
+    }
+)
+
+_AI_ERROR_MESSAGES: dict[str, str] = {
+    "PROVIDER_CONFIGURATION_ERROR": (
+        "AI service is not configured. Set DEEPSEEK_API_KEY in the runtime "
+        "environment, then try again."
+    ),
+    "PROVIDER_AUTH_FAILED": "AI service authentication failed.",
+    "PROVIDER_ACCOUNT_ERROR": (
+        "The AI service account cannot currently complete requests."
+    ),
+    "PROVIDER_TIMEOUT": "The AI service request timed out.",
+    "PROVIDER_RATE_LIMITED": (
+        "The AI service is temporarily rate limited. Try again later."
+    ),
+    "PROVIDER_CONNECTION_FAILED": "Could not connect to the AI service.",
+    "PROVIDER_UNAVAILABLE": (
+        "The AI service is temporarily unavailable. Try again later."
+    ),
+    "PROVIDER_REQUEST_REJECTED": "The AI service rejected the request.",
+    "PROVIDER_FAILURE": "The AI service could not complete the request.",
+    "INVALID_INSIGHT_INPUT": (
+        "The current analysis could not be prepared for AI interpretation."
+    ),
+    "PIPELINE_NOT_ANALYZABLE": (
+        "Run a successful deterministic analysis before generating AI insights."
+    ),
+    "INSIGHT_CONTEXT_TOO_LARGE": (
+        "The current analysis is too large for AI interpretation."
+    ),
+    "NON_FINITE_INSIGHT_VALUE": (
+        "The current analysis contains a value that cannot be safely interpreted."
+    ),
+    "INVALID_PROMPT_INPUT": (
+        "The current analysis could not be prepared for AI interpretation."
+    ),
+    "PROMPT_TOO_LARGE": (
+        "The current analysis is too large for AI interpretation."
+    ),
+}
+
+_AI_GENERIC_REJECTION_MESSAGE = (
+    "The AI service returned a result that could not be safely accepted."
+)
+_AI_UNEXPECTED_ERROR_MESSAGE = (
+    "AI insights could not be generated because of an unexpected error."
+)
+
+_SCOPE_LABELS: dict[str, str] = {
+    "date": "Date",
+    "marketplace": "Marketplace",
+    "country": "Country",
+    "sku": "SKU",
 }
 
 _PERCENTAGE_COLUMNS: frozenset[str] = frozenset(
@@ -165,6 +255,24 @@ def build_analysis_signature(
         )
     )
     return digest.hexdigest()
+
+
+def build_ai_signature(analysis_signature: str) -> str:
+    """Bind cached AI output to one analysis and the frozen AI contract."""
+
+    components = (
+        analysis_signature,
+        INSIGHT_CONTEXT_VERSION,
+        INSIGHT_PROMPT_VERSION,
+        INSIGHT_OUTPUT_VERSION,
+        DEEPSEEK_MODEL,
+    )
+    payload = json.dumps(
+        components,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _truncate_utf8(text: str, max_bytes: int) -> str:
@@ -349,7 +457,12 @@ def _initialize_session_state() -> None:
 
 
 def _clear_analysis_state() -> None:
-    for key, value in _SESSION_DEFAULTS.items():
+    for key, value in _ANALYSIS_SESSION_DEFAULTS.items():
+        st.session_state[key] = value
+
+
+def _clear_ai_state() -> None:
+    for key, value in _AI_SESSION_DEFAULTS.items():
         st.session_state[key] = value
 
 
@@ -357,6 +470,153 @@ def _sync_analysis_signature(current_signature: str | None) -> None:
     previous_signature = st.session_state.analysis_signature
     if previous_signature is not None and previous_signature != current_signature:
         _clear_analysis_state()
+        _clear_ai_state()
+
+
+def _ai_error_message(code: str) -> str:
+    if code in _AI_RESULT_REJECTION_CODES:
+        return _AI_GENERIC_REJECTION_MESSAGE
+    return _AI_ERROR_MESSAGES.get(code, _AI_UNEXPECTED_ERROR_MESSAGE)
+
+
+def _store_ai_error(code: str, *, signature: str) -> None:
+    st.session_state.ai_error_code = code
+    st.session_state.ai_error_message = _ai_error_message(code)
+    st.session_state.ai_signature = signature
+
+
+def _generate_ai_output(result: PipelineResult) -> InsightOutput:
+    """Execute the sealed AI path once for one explicit button event."""
+
+    context = build_insight_context(result)
+    provider = DeepSeekInsightProvider()
+    return generate_insight(context, provider=provider)
+
+
+def _run_ai_generation(result: PipelineResult, *, signature: str) -> None:
+    try:
+        output = _generate_ai_output(result)
+        if not isinstance(output, InsightOutput):
+            raise TypeError("generate_insight() returned an invalid result type")
+    except (
+        InsightContextError,
+        InsightPromptError,
+        InsightProviderError,
+        InsightOutputError,
+    ) as error:
+        code = error.code if isinstance(error.code, str) else "UNEXPECTED_AI_ERROR"
+        _store_ai_error(code, signature=signature)
+    except Exception:
+        logger.exception("Unexpected error during AI insight generation")
+        _store_ai_error("UNEXPECTED_AI_ERROR", signature=signature)
+    else:
+        st.session_state.ai_output = output
+        st.session_state.ai_error_code = None
+        st.session_state.ai_error_message = None
+        st.session_state.ai_signature = signature
+
+
+def _format_ai_scope(scope: dict[str, Any]) -> str:
+    if not scope:
+        return "Overall"
+    return " · ".join(
+        f"{_SCOPE_LABELS.get(dimension, dimension.replace('_', ' ').title())}: "
+        f"{value}"
+        for dimension, value in scope.items()
+    )
+
+
+def _render_ai_output(output: InsightOutput) -> None:
+    st.markdown("#### Executive Summary")
+    st.write(output.executive_summary)
+
+    st.markdown("#### Priority Insights")
+    if not output.priority_insights:
+        st.info("No priority insight was produced for this analysis.")
+    for insight in output.priority_insights:
+        with st.expander(_format_ai_scope(insight.scope)):
+            st.caption(f"Confidence: {insight.confidence.title()}")
+            st.markdown("**Observation**")
+            st.write(insight.observation)
+            st.markdown("**Evidence codes**")
+            st.markdown(
+                " · ".join(f"`{code}`" for code in insight.evidence_codes)
+            )
+            if insight.possible_explanations:
+                st.markdown("**Possible explanations (hypotheses)**")
+                for explanation in insight.possible_explanations:
+                    st.markdown(f"- {explanation}")
+            if insight.recommended_checks:
+                st.markdown("**Recommended checks (investigations)**")
+                for check in insight.recommended_checks:
+                    st.markdown(f"- {check}")
+
+    if output.overall_limitations:
+        st.markdown("#### Limitations")
+        for limitation in output.overall_limitations:
+            st.markdown(f"- {limitation}")
+
+
+def _render_ai_section(result: PipelineResult, current_signature: str) -> None:
+    if result.status is not PipelineStatus.SUCCESS:
+        return
+    if st.session_state.analysis_signature != current_signature:
+        return
+
+    ai_signature = build_ai_signature(current_signature)
+    has_ai_state = any(
+        st.session_state[key] is not None for key in _AI_SESSION_DEFAULTS
+    )
+    if has_ai_state and st.session_state.ai_signature != ai_signature:
+        _clear_ai_state()
+
+    st.subheader("AI Insights")
+    st.caption(
+        "Optional interpretation powered by DeepSeek. Generation occurs only "
+        "when you explicitly click the button below."
+    )
+    st.info(
+        "AI interprets existing deterministic metrics and diagnostic signals. "
+        "Diagnostic signals are observations; possible explanations are "
+        "hypotheses; recommended checks are investigations—not proven root "
+        "causes or guaranteed actions."
+    )
+
+    current_output = (
+        st.session_state.ai_output
+        if st.session_state.ai_signature == ai_signature
+        and isinstance(st.session_state.ai_output, InsightOutput)
+        else None
+    )
+    button_label = (
+        "Regenerate AI Insights"
+        if current_output is not None
+        else "Generate AI Insights"
+    )
+    generate_clicked = st.button(button_label, key="generate_ai_insights")
+    if generate_clicked:
+        with st.spinner("Generating AI insights..."):
+            _run_ai_generation(result, signature=ai_signature)
+        if st.session_state.ai_error_message is None:
+            st.rerun()
+
+    ai_error_message = st.session_state.ai_error_message
+    current_output = (
+        st.session_state.ai_output
+        if st.session_state.ai_signature == ai_signature
+        and isinstance(st.session_state.ai_output, InsightOutput)
+        else None
+    )
+    if ai_error_message is not None:
+        if current_output is not None:
+            st.warning(
+                "AI regeneration failed. Showing the previous successful result. "
+                f"{ai_error_message}"
+            )
+        else:
+            st.error(ai_error_message)
+    if current_output is not None:
+        _render_ai_output(current_output)
 
 
 def _render_error(error: ErrorPresentation) -> None:
@@ -558,6 +818,8 @@ def main() -> None:
                     group_by=group_by,
                 )
                 _store_artifacts(artifacts, uploaded_file.name)
+                if artifacts.pipeline_result.status is not PipelineStatus.SUCCESS:
+                    _clear_ai_state()
             except (
                 DataLoadError,
                 PipelineError,
@@ -586,6 +848,8 @@ def main() -> None:
     _render_metrics(result, group_label)
     _render_diagnostics(result)
     _render_download()
+    if current_signature is not None:
+        _render_ai_section(result, current_signature)
 
 
 if __name__ == "__main__":

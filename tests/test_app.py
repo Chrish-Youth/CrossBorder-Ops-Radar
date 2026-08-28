@@ -478,6 +478,7 @@ def test_sample_success_ui_shows_validation_metrics_diagnostics_and_download() -
         "Metrics",
         "Diagnostic Signals",
         "Excel Report",
+        "AI Insights",
     ]
     assert [(metric.label, metric.value) for metric in at.metric] == [
         ("Raw Rows", "23"),

@@ -2,7 +2,7 @@
 
 CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营数据分析 Demo。项目计划接收 CSV/XLSX 日汇总数据，完成数据质量检查、SKU 指标计算、规则化异常诊断，并生成中文运营报表。
 
-核心运营计算与报表链路不依赖任何大模型。Phase 8.4 额外提供可选的 DeepSeek Provider Adapter，但尚未接入 Streamlit，也不会自动发起模型请求；项目仍不使用数据库，也不包含登录或权限系统。
+核心运营计算与报表链路不依赖任何大模型。Phase 8.5 在确定性分析完成后提供可选的 DeepSeek AI 解读，但只有用户显式点击生成按钮才会请求外部服务；项目仍不使用数据库，也不包含登录或权限系统。
 
 ## 当前阶段
 
@@ -26,8 +26,9 @@ CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨
 - Phase 8.3.1 Provider Hardening completed：Exponent overflow、病理性 str subclass encoding 与 malformed JSON raw-response retention 边界已加固。
 - Phase 8.4 DeepSeek Real Provider Integration implementation completed：固定模型、Credentials、Timeout、禁用 SDK Retry、JSON Mode、响应提取与稳定错误映射已实现，全部自动化测试保持离线。
 - Phase 8.4.1 DeepSeek Provider Hardening completed：系统资源不足错误分类、response content 安全空值检查、真实 SDK 离线序列化和 Client 状态回归已加固。
-- Live API Smoke not yet run：自动化真实 API 调用和付费请求仍为 0；当前实现已准备好进行一次受控手工 Smoke Test。
-- Next phase not started：Retry Policy、第二 Provider、Provider Selection、Usage/Cost、token-aware budgeting 与 AI UI 均未实现。
+- Controlled Live API Smoke completed：真实 Sample 已通过 DeepSeek、strict JSON、Output Validator 与 canonical output boundary，单次请求成功且无 Retry。
+- Phase 8.5 Streamlit AI Insight Integration completed：可选、显式的 AI generation、独立 Session State、stale invalidation、安全错误呈现和结构化 InsightOutput 展示已接入单页应用。
+- Next phase not started：Retry Policy、第二 Provider、Provider Selection、Usage/Cost、token-aware budgeting 与 AI export/audit metadata 均未实现。
 
 当前已实现的数据流为：
 
@@ -69,6 +70,8 @@ PipelineResult
    │    Context-aware Output Validation
    │       ↓
    │    InsightOutput
+   │       ↓
+   │    Streamlit AI Insights
    │
    └──→ Report Model
            ↓
@@ -1018,11 +1021,11 @@ Phase 8.4 没有任何自动 Retry：CrossBorder Adapter 不循环调用，OpenA
 
 ```text
 Automated real API calls = 0
-Paid API calls = 0
-Live API Smoke = NOT RUN
+Controlled Live Smoke calls = 1
+Live API Smoke = SUCCESS
 ```
 
-Phase 8.4.1 完成后只表示 Real Provider 已准备好进行一次受控手工 Live Smoke；该付费步骤必须由用户单独确认后执行。
+Controlled Live Smoke 已确认真实 DeepSeek response 能通过完整 Generic Boundary 并形成合法 `InsightOutput`。后续自动化测试继续保持完全离线，不使用真实 Key 或付费请求。
 
 ## Report & Excel Export
 
@@ -1164,7 +1167,7 @@ group dimensions
 streamlit run app.py
 ```
 
-Phase 7 是单页面应用，固定完成以下流程：
+Phase 7 提供确定性单页面工作流，Phase 8.5 在其后增加独立、可选的 AI 解读动作：
 
 ```text
 Upload CSV/XLSX
@@ -1172,6 +1175,8 @@ Upload CSV/XLSX
 → Run Analysis
 → Validation / Metrics / Diagnostic Signals
 → Download Excel Report
+→ Explicit Generate AI Insights (optional)
+→ Validated InsightOutput display
 ```
 
 应用只负责上传、参数映射、调用、展示、Session State 和错误呈现。上传内容以原始 bytes 和显式 filename 传给 `run_pipeline()`；UI 不使用 Pandas 自行读取上传文件、不猜测文件格式，也不重新实现 Validation、Metrics、Inventory、Diagnostic Threshold 或 Excel 数据构建。
@@ -1192,7 +1197,7 @@ Upload CSV/XLSX
 
 上传文件后不会自动执行分析。只有点击 `Run Analysis` 才调用 Pipeline、构建 ReportData 并生成一次 Excel bytes。当前 session 保存 analysis signature、PipelineResult、ReportData、Excel bytes、ReportError 和安全下载文件名；signature 包含 filename、文件 bytes SHA-256 和 `group_by`。文件内容、文件名或分析粒度变化时，旧结果立即失效，必须重新点击运行。应用不使用数据库、磁盘缓存或跨 Session 历史记录。
 
-每次新的 `Run Analysis` 在调用 Pipeline 前都会清理上一轮的 execution state，包括 PipelineResult、ReportData、Excel bytes、AnalysisError、ReportError 和下载文件名。上传内容、文件名或 Analysis Level 变化产生的 rerun 也会在结果渲染前使旧状态失效；因此旧 Metrics、Diagnostics 或 Workbook 不会短暂成为新输入的当前结果。Report 失败只隔离 Excel 下载，不清除同一轮已经成功产生的 Validation、Metrics 和 Diagnostics；下一次成功运行会清除旧错误。Download Button 始终只使用当前 analysis signature 对应的 Excel bytes。
+每次新的 `Run Analysis` 在调用 Pipeline 前都会清理上一轮的 deterministic execution state，包括 PipelineResult、ReportData、Excel bytes、AnalysisError、ReportError 和下载文件名。上传内容、文件名或 Analysis Level 变化产生的 rerun 也会在结果渲染前使旧状态失效；因此旧 Metrics、Diagnostics 或 Workbook 不会短暂成为新输入的当前结果。Report 失败只隔离 Excel 下载，不清除同一轮已经成功产生的 Validation、Metrics 和 Diagnostics；下一次成功运行会清除旧错误。Download Button 始终只使用当前 analysis signature 对应的 Excel bytes。同一 analysis signature 再次运行时，已有成功 AI Output 会保留；输入或粒度变化时，deterministic 与 AI state 都立即失效。
 
 ### Validation、Metrics 与 Diagnostic Signals
 
@@ -1219,6 +1224,28 @@ Pipeline/Diagnostics 失败不会伪装为 SUCCESS。Report 生成失败不会�
 
 已知的 `DataLoadError`、`PipelineError`、`MetricsCalculationError`、`DiagnosticsError` 和 `ReportError` 按既有结构化路径展示，不记录为 unexpected server failure。其他未预期的 application/report exception 使用 Python 标准 `logger.exception(...)` 在服务器侧记录 exception 与 traceback；UI 仍只显示稳定的通用 Code 和安全消息，不显示原始异常文本、traceback、文件路径或行号。应用不在日志中写入上传 bytes、完整 DataFrame 或业务数据内容，且不在模块 import 时配置全局 logging handler。
 
+### Optional AI Insights
+
+AI 区域只在当前 analysis signature 对应的 `PipelineResult.status == SUCCESS` 时出现；合法的 Empty SUCCESS 或无 Diagnostic Signals 的 SUCCESS 同样允许生成。上传、文件变化、Analysis Level 变化、`Run Analysis`、普通 rerender、表格展示和 Excel 下载都不会调用 Provider。只有用户显式点击 `Generate AI Insights`，或已有当前结果后显式点击 `Regenerate AI Insights`，才会分别触发最多一次请求；没有自动 Retry。
+
+App 只调用封板后的公共链路：
+
+```text
+PipelineResult
+→ build_insight_context()
+→ DeepSeekInsightProvider()
+→ generate_insight()
+→ validated InsightOutput
+```
+
+Provider 只在按钮事件内构造，不在 import 或页面启动时构造，也不保存在 Session State。`DEEPSEEK_API_KEY` 只由运行环境提供，App 不提供 Key 输入框；没有 Key 时，上传、确定性分析、Metrics、Diagnostics 和 Excel 下载仍正常工作，只有点击 AI 按钮时显示安全配置提示。
+
+AI Session State 与 PipelineResult/ReportData 分离，只保存 `ai_output`、安全的 error code/message 和 `ai_signature`。`ai_output` 必须是已经通过 Generic Boundary 与 Output Validator 的 `InsightOutput`；Session State 不保存 API Key、Provider/Client、Prompt、raw JSON 或 raw response。AI signature 由当前 analysis signature、Insight Context/Prompt/Output version 和固定 DeepSeek model 组成，不包含 API Key。文件名、上传 bytes 或 `group_by` 改变会在渲染前清除旧 AI Output 与错误；相同签名的普通 rerender 和重新分析保留已有付费结果。
+
+首次 AI generation 失败时只显示按 stable code 映射的安全产品文案，不产生 partial output，也不影响当前 Validation、Metrics、Diagnostics、Excel 或 Pipeline status。已有成功结果后的 Regenerate 失败会保留并明确标注上一份成功 Output；成功 Regenerate 才替换旧 Output 并清除错误。用户之后再次点击属于新的显式请求，不是自动 Retry。
+
+AI Output 按 Validator 保留的顺序展示 Executive Summary、Scope、Confidence、Observation、Evidence Codes、Possible Explanations、Recommended Checks 和 Overall Limitations；`priority_insights=[]` 是合法空状态。UI 不展示 Prompt、raw JSON、token、费用，不重新计算指标，也不重新验证 Output Schema。界面明确声明：Diagnostic Signals 是 observations，Possible Explanations 是 hypotheses，Recommended Checks 是 investigations，并非已证实的 Root Cause 或保证有效的行动。
+
 ### Excel Download 与 V1 Scope
 
 下载 MIME 固定为：
@@ -1231,7 +1258,7 @@ application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
 
 Excel 仍受 Phase 6.1 契约约束：单元格文本最多 32,767 字符；表格最多 1,048,575 个数据行加 Header；包含 pre-1900 日期时整个日期列使用 ISO text fallback。达到限制时明确失败，不截断、不分页。
 
-Phase 7 不展示 Raw/Clean Data，不提供 Threshold Editor、Charts、Dashboard Visualization、LLM、AI Insight、Root Cause、自动运营建议、账号、数据库或历史报告。Phase 8.1–8.4 的 Insight Context、Prompt/Output Contract、Mock Provider 与可选 DeepSeek Adapter 均未接入 Streamlit。
+应用不展示 Raw/Clean Data，不提供 Threshold Editor、Charts、Dashboard Visualization、Chat、Root Cause Engine、自动执行运营动作、账号、数据库或历史报告。AI Output 不进入 Excel；确定性 Workbook Contract 保持不变。
 
 ## 样例数据
 
@@ -1241,7 +1268,7 @@ Phase 7 不展示 Raw/Clean Data，不提供 Threshold Editor、Charts、Dashboa
 
 ```text
 CrossBorder Ops Radar/
-├── app.py                       # Phase 7 Streamlit 单页应用与纯展示 helper
+├── app.py                       # Streamlit 确定性分析与可选 AI Insight UI
 ├── README.md
 ├── requirements.txt
 ├── data/
@@ -1270,7 +1297,8 @@ CrossBorder Ops Radar/
     ├── test_deepseek_provider.py
     ├── test_pipeline.py
     ├── test_report.py
-    └── test_app.py
+    ├── test_app.py
+    └── test_app_ai.py
 ```
 
 运行测试：
