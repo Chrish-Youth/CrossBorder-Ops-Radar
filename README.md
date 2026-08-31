@@ -2,7 +2,7 @@
 
 CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营数据分析 Demo。项目计划接收 CSV/XLSX 日汇总数据，完成数据质量检查、SKU 指标计算、规则化异常诊断，并生成中文运营报表。
 
-核心运营计算与报表链路不依赖任何大模型。确定性分析完成后可由用户显式请求 DeepSeek AI 解读；Phase 8.10 已把离线、版本化定价快照派生的 Cost Audit Metadata 原子写入 Receipt V3，Phase 8.11 进一步加入 immutable Pricing Policy Catalog 与人工核验的更新工作流。只有用户显式点击生成按钮才会请求外部服务；历史 Policy 与 Receipt 不会因 Catalog 后续新增版本而被改写，成本计算不发起网络请求，也不代表 Provider 最终账单。项目仍不使用数据库，也不包含登录或权限系统。
+核心运营计算与报表链路不依赖任何大模型。确定性分析完成后可由用户显式请求 DeepSeek AI 解读；Phase 8.10 已把离线、版本化定价快照派生的 Cost Audit Metadata 原子写入 Receipt V3，Phase 8.11 进一步加入 immutable Pricing Policy Catalog 与人工核验的更新工作流，Phase 8.12/8.12.1 建立并加固 deterministic Retry eligibility contract，Phase 8.13 则新增纯离线的 multi-attempt provenance contract。只有用户显式点击生成按钮才会请求外部服务；RetryDecision 与 AttemptAuditTrail 当前都不会被 App 执行或保存，历史 Policy 与 Receipt 不会因 Catalog 后续新增版本而被改写，成本计算不发起网络请求，也不代表 Provider 最终账单。项目仍不使用数据库，也不包含登录或权限系统。
 
 ## 当前阶段
 
@@ -36,7 +36,12 @@ CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨
 - Phase 8.9 Versioned Pricing Policy & Cost Estimation Core completed：当前 DeepSeek Flash 定价已作为明确版本的 immutable offline snapshot 保存，并可根据完整 Usage、适用时间与 UTC tier 精确派生 Decimal 成本估算。
 - Phase 8.10 Cost Audit Metadata → Receipt V3 / Streamlit Integration completed：request-start pricing reference、available/unavailable Cost Audit、exact Decimal JSON、Receipt V3 与 Estimated Cost 展示已接入原子 AI generation state。
 - Phase 8.11 Versioned Pricing Policy Catalog & Refresh Workflow completed：按 provider/model/reference timestamp 选择历史适用 immutable snapshot，并冻结只新增、不修改历史 Policy 的人工维护流程。
-- Next phase not started：Retry Policy、token-aware budgeting、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账均未实现。
+- Phase 8.11.1 Reserved Pricing Identity Hardening completed：`"unselected"` 已成为 Catalog 与 Cost Audit explicit snapshot 共同执行的唯一 no-policy 保留身份。
+- Phase 8.12 Retry Policy Core completed：immutable RetryPolicy、RetryDecision、attempt budget 与基于现有 Provider code allowlist 的 deterministic evaluator 已实现，但不执行 Retry。
+- Phase 8.12.1 Permanent Terminal Retry Taxonomy Hardening completed：十个永久 terminal Provider error 已成为不可被 Custom Policy 或直接 Decision 构造覆盖的安全 invariant。
+- Phase 8.13 Attempt Audit Contract completed：immutable ProviderAttemptAudit、AttemptAuditTrail、Usage/Cost 三态和跨 attempt ordering/linkage invariants 已实现，但未接入 Retry execution、Receipt 或 App。
+- Phase 8.13.1 Attempt Audit JSON Integer Representability Hardening completed：所有由 Attempt Audit 作为 JSON number 输出的整数均受独立 512 位十进制可表示性边界保护。
+- Next phase not started：Retry Execution + Receipt V4 / App Integration、token-aware budgeting、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账均未实现。
 
 当前已实现的数据流为：
 
@@ -1197,6 +1202,161 @@ Live API Smoke = SUCCESS
 
 Controlled Live Smoke 已确认真实 DeepSeek response 能通过完整 Generic Boundary 并形成合法 `InsightOutput`。后续自动化测试继续保持完全离线，不使用真实 Key 或付费请求。
 
+### Retry Policy Core / Eligibility Only
+
+Phase 8.12 新增一个完全独立、纯离线的 Retry eligibility domain：
+
+```text
+Stable Provider error code
+        +
+completed attempt count
+        +
+immutable RetryPolicy
+        ↓
+deterministic RetryDecision
+```
+
+公共接口为：
+
+```python
+RETRY_POLICY_VERSION = "1"
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    version: str
+    max_attempts: int
+    retryable_error_codes: tuple[str, ...]
+
+@dataclass(frozen=True)
+class RetryDecision:
+    policy_version: str
+    error_code: str
+    action: str
+    reason: str
+    attempts_completed: int
+    max_attempts: int
+
+def evaluate_retry(
+    *,
+    error_code: str,
+    attempts_completed: int,
+    policy: RetryPolicy | None = None,
+) -> RetryDecision:
+    ...
+```
+
+`max_attempts` 表示包括初始请求在内允许的最大 Provider invocation 数量；默认值为 2，即一个 initial request 加至多一个未来 retry。`attempts_completed` 表示已经完成并产生当前失败的调用数量，因此必须是大于等于 1 的 exact int，bool 不被接受。只要 `attempts_completed >= max_attempts`，结果固定为 `do_not_retry / ATTEMPT_LIMIT_REACHED`，而后才考虑错误是否属于 allowlist。`max_attempts=1` 因而表示任何第一次失败后都没有 Retry budget。
+
+Retry taxonomy 分成两个不对称层级：十个 **permanent terminal Provider errors** 是任何 Policy 都不能覆盖的 hard safety invariant；四个 **default transient retryable errors** 只属于默认 Policy 的 eligibility choice，并不是 universally mandatory retry。Custom Policy 可以省略任何默认 transient code，从而采用更保守的策略，但不能把 permanent terminal code 放入 allowlist。
+
+默认 Policy 只 allowlist 四个明确瞬态的现有 Provider code。所有当前可达 Provider code 的 eligibility 如下；这里的 Yes 只表示默认策略允许未来再尝试，不表示应用今天会自动执行：
+
+| Stable Provider code | Eligible under Retry Policy | Decision reason on attempt 1 | Rationale |
+| --- | ---: | --- | --- |
+| `PROVIDER_TIMEOUT` | Yes | `RETRYABLE_TRANSIENT_ERROR` | transport timeout may be transient |
+| `PROVIDER_CONNECTION_FAILED` | Yes | `RETRYABLE_TRANSIENT_ERROR` | connection condition may be transient |
+| `PROVIDER_RATE_LIMITED` | Yes | `RETRYABLE_TRANSIENT_ERROR` | temporary Provider rate condition |
+| `PROVIDER_UNAVAILABLE` | Yes | `RETRYABLE_TRANSIENT_ERROR` | temporary Provider/service availability |
+| `INVALID_PROVIDER` | No | `ERROR_NOT_RETRYABLE` | invalid local Provider boundary |
+| `PROVIDER_FAILURE` | No | `ERROR_NOT_RETRYABLE` | generic/unknown failure fails closed |
+| `PROVIDER_CONFIGURATION_ERROR` | No | `ERROR_NOT_RETRYABLE` | retry cannot repair configuration |
+| `PROVIDER_AUTH_FAILED` | No | `ERROR_NOT_RETRYABLE` | retry cannot repair credentials/permission |
+| `PROVIDER_ACCOUNT_ERROR` | No | `ERROR_NOT_RETRYABLE` | retry cannot repair account/payment state |
+| `PROVIDER_REQUEST_REJECTED` | No | `ERROR_NOT_RETRYABLE` | identical rejected request remains invalid |
+| `INVALID_PROVIDER_RESPONSE` | No | `ERROR_NOT_RETRYABLE` | response-contract failure is not resampled |
+| `INVALID_PROVIDER_USAGE` | No | `ERROR_NOT_RETRYABLE` | malformed usage is a contract failure |
+| `PROVIDER_RESPONSE_TOO_LARGE` | No | `ERROR_NOT_RETRYABLE` | size boundary is not bypassed by resampling |
+| `INVALID_PROVIDER_JSON` | No | `ERROR_NOT_RETRYABLE` | strict JSON failure is not resampled |
+
+表中的十个 No code 构成 canonical permanent terminal set：`INVALID_PROVIDER`、`PROVIDER_FAILURE`、`PROVIDER_CONFIGURATION_ERROR`、`PROVIDER_AUTH_FAILED`、`PROVIDER_ACCOUNT_ERROR`、`PROVIDER_REQUEST_REJECTED`、`INVALID_PROVIDER_RESPONSE`、`INVALID_PROVIDER_USAGE`、`PROVIDER_RESPONSE_TOO_LARGE`、`INVALID_PROVIDER_JSON`。`RetryPolicy` 构造时会拒绝包含任一 terminal code 的 allowlist，包括 terminal 与 transient/future code 混合的 tuple；它不会静默删除或修复成员。`RetryDecision` 同样拒绝 permanent terminal code 与 `action="retry"` 的直接构造。Terminal code 在 budget 未耗尽时仍合法地产生 `do_not_retry / ERROR_NOT_RETRYABLE`；budget 已耗尽时继续由 attempt-limit priority 产生 `do_not_retry / ATTEMPT_LIMIT_REACHED`。
+
+该分类使用 exact string identity，不做 trim、lower、casefold 或 alias。未知的未来 code（例如 `FUTURE_PROVIDER_ERROR`）在 Default Policy 下产生 `do_not_retry / ERROR_NOT_RETRYABLE`；Custom Policy 可以显式 allowlist 一个不属于 permanent terminal set 的 future/non-terminal code，但仍不能绕过 attempt limit。非 Provider contract failure（例如 `INVALID_INSIGHT_OUTPUT`）同样不在默认 Retry eligibility 内，系统不会通过重新采样绕过 strict JSON、Output Validator 或 response-size boundary。
+
+`RetryDecision` 只有 `retry` 与 `do_not_retry` 两种 action，并使用 `RETRYABLE_TRANSIENT_ERROR`、`ERROR_NOT_RETRYABLE`、`ATTEMPT_LIMIT_REACHED` 三种稳定 reason。Policy 和 Decision 均冻结且拒绝 blank identity、bool/zero/negative attempts、非 tuple allowlist、非 string code、重复 code、terminal allowlist/retry 以及 action/reason/attempt budget 相互矛盾的直接构造。Evaluator 不读取 system time、environment、Streamlit Session、Provider object、Usage、Pricing、Receipt、network 或 random，也不导入 OpenAI SDK 或 DeepSeek Adapter。
+
+Phase 8.12/8.12.1 **不执行 RetryDecision**：没有 retry loop、`time.sleep`、backoff、jitter、Retry UI、Session 字段或第二次 Provider request。OpenAI SDK 继续固定 `max_retries=0`，App 中一次显式 Generate/Regenerate 继续最多调用 Provider 一次，AI signature 与 Receipt V3 均不包含 RetryPolicy。
+
+Phase 8.13 已把这些最低 attempt-level provenance 事实冻结为独立 Domain Contract；Retry execution、Receipt V4 与 App Integration 仍未开始。
+
+`retryable` 仅表示应用策略允许另一次尝试；它不表示失败 attempt 免费、未被 Provider 处理或不会计费。Timeout 或 connection failure 只说明客户端没有获得正常结果，不能证明 Provider 执行了零工作或收取了零费用。当前 Receipt Cost 继续只描述其中保存的 successful recorded generation usage，不包含失败 attempt、潜在 Retry spend 或跨 attempt 成本汇总。
+
+### Attempt Audit Contract / Multi-Attempt Provenance
+
+Phase 8.13 新增独立的 `ATTEMPT_AUDIT_VERSION = "1"`，用于描述已经发生并完成的 Provider invocation；它不是 pending/running task state，也不触发任何调用。公共接口为：
+
+```python
+@dataclass(frozen=True)
+class ProviderAttemptAudit:
+    version: str
+    attempt_number: int
+    provider: str
+    model: str
+    pricing_reference_at: str
+    status: str
+    error_code: str | None
+    retry_decision: RetryDecision | None
+    usage_status: str
+    usage: ProviderUsage | None
+    cost_status: str
+    cost: CostAuditMetadata | None
+
+def build_succeeded_attempt_audit(...) -> ProviderAttemptAudit:
+    ...
+
+def build_failed_attempt_audit(...) -> ProviderAttemptAudit:
+    ...
+
+@dataclass(frozen=True)
+class AttemptAuditTrail:
+    version: str
+    retry_policy_version: str
+    max_attempts: int
+    outcome: str
+    attempts: tuple[ProviderAttemptAudit, ...]
+```
+
+每个 Attempt 独立保存 `attempt_number`、exact provider/model identity 和该次 Provider request-start 的 `pricing_reference_at`。Builder 只接受显式 timezone-aware datetime，将同一 instant 规范化为 UTC ISO 8601；它不读取 current time。未来若 Attempt 1 与 Attempt 2 跨越价格时段，两者必须保留不同 reference，Trail 不共享或重算时间。Schema 允许不同 attempt 使用不同 provider/model，以便未来忠实表达 fallback，但当前没有实现 Provider selection 或 fallback execution。
+
+Usage 状态固定为：
+
+| Status | 含义 | `usage` |
+| --- | --- | --- |
+| `recorded` | 成功响应包含合法 ProviderUsage | ProviderUsage |
+| `unavailable` | 成功响应存在，但 Provider 省略 Usage | `None` |
+| `unknown` | Provider invocation 失败，实际 token 消耗无法可靠确定 | `None` |
+
+Cost 状态固定为：
+
+| Status | 含义 | `cost` |
+| --- | --- | --- |
+| `available` | 成功 attempt 具有 available CostAuditMetadata | CostAuditMetadata |
+| `unavailable` | 成功 attempt 具有已知 unavailable reason | CostAuditMetadata |
+| `unknown` | 失败 attempt 的 Provider-side Usage/Billing 无法可靠确定 | `None` |
+
+`unavailable != unknown`：前者表示已收到成功 ProviderGeneration，但某项审计输入缺失或 Policy 不适用；后者表示 invocation 失败，客户端不能证明真实 Usage 或 Cost。失败 attempt 固定为 `usage_status="unknown" / usage=None / cost_status="unknown" / cost=None`，不得伪造成零 Usage、零 Cost，也不得用 successful `USAGE_UNAVAILABLE` reason 替代。
+
+成功 attempt 不含 error 或 RetryDecision，Usage 只能 recorded/unavailable，Cost 只能 available/unavailable 且必须包含 CostAuditMetadata。Attempt reference 必须与 Cost reference 完全一致；available cost 还要求 recorded Usage，并要求 estimate provider/model 与 Attempt provenance 一致。`USAGE_UNAVAILABLE` 必须对应 unavailable Usage，`CACHE_BREAKDOWN_UNAVAILABLE` 必须对应 recorded Usage；`POLICY_NOT_EFFECTIVE` 与 `POLICY_NOT_APPLICABLE` 可同时支持 recorded 或 unavailable Usage。
+
+失败 attempt 必须包含 stable application/provider error code 与已经产生的 RetryDecision；Decision 的 error code 和 `attempts_completed` 必须分别匹配 Attempt error 与 number。Audit 只验证历史 linkage，不调用 `evaluate_retry()`，不依赖当前 DEFAULT_RETRY_POLICY，也不会在代码升级后重新推导历史决定。
+
+Completed Trail 至少包含一个 Attempt，数量不能超过 `max_attempts`，tuple 顺序必须严格编号为 `1..N`，不会自动排序。所有非最终 Attempt 必须是 `failed + retry`；succeeded Trail 必须以 success 结束，failed Trail 必须以 `failed + do_not_retry` 结束。支持 single success、single terminal failure、retry→success、retry→exhaustion、三次及更多 Policy budget 内的 sequence，以及跨 provider/model provenance。
+
+Attempt 与 Trail 的 `to_dict()` 均显式构造 fresh JSON-safe mapping，不使用 `asdict()`。Usage 六字段保留 JSON integer/null；Cost 复用 CostAuditMetadata 的 exact decimal string；RetryDecision 显式序列化六个稳定字段；unknown Usage/Cost 序列化为 `null`。Audit 不保存 Prompt、raw response、raw exception、API key、HTTP body/header、业务数据行、DataFrame、InsightOutput 或 Evidence。
+
+Phase 8.13.1 为这个独立 persistence contract 增加：
+
+```text
+MAX_ATTEMPT_AUDIT_INTEGER_DECIMAL_DIGITS = 512
+```
+
+所有由 Attempt Audit 作为 JSON number 输出的整数都必须位于 `0..10**512-1`（Attempt counter 自身继续要求至少为 1）。该边界显式覆盖 `attempt_number`、Trail `max_attempts`、RetryDecision 的 `attempts_completed/max_attempts`，以及 ProviderUsage 的 `prompt_tokens`、`completion_tokens`、`total_tokens`、`prompt_cache_hit_tokens`、`prompt_cache_miss_tokens`、`reasoning_tokens`；optional Usage 字段的 `None` 保持为 JSON `null`。验证使用纯 numeric comparison，不调用 `str(value)`、不修改 `sys.set_int_max_str_digits`，也不从 Receipt 导入 representability constant。
+
+512 位最大值 `10**512-1` 仍保持 Python/JSON integer，并可完成 `json.dumps(..., allow_nan=False)`；513 位及以上在进入 Attempt Audit 时以 `INVALID_ATTEMPT_AUDIT` 拒绝，不在 `to_dict()` 中 stringify、truncate、round、转 float 或改成 `null`。ProviderUsage sealed contract 本身继续允许 arbitrary-precision Python integer，例如 `10**5000` 仍是合法 Provider fact，只是不能作为 JSON number 进入当前 Attempt Audit persistence contract。这个 512 位边界不是 Provider/model token limit、token budget、billing limit、业务 Retry 次数上限或实际可执行 Attempt 数量限制。
+
+Cost Decimal 不受该整数边界约束，因为 Cost Audit 已将金额表示为 exact JSON string；包括很大的 finite Decimal 也不会被转为 float、round 或截断。Usage/Cost 的 recorded、unavailable、unknown 三态及 failed Attempt 的 unknown/null 语义保持不变。
+
+Phase 8.13 不修改 RetryPolicy、RetryDecision、Provider、Cost Audit、Pricing、Receipt V3、App、Session State 或 AI Signature；没有 retry loop、second Provider invocation、sleep、backoff、jitter、Retry-After execution 或网络访问。OpenAI SDK 继续固定 `max_retries=0`，一次显式 Generate/Regenerate 仍最多调用 Provider 一次。AttemptAuditTrail 尚未写入 Receipt 或 Session。
+
 ## Report & Excel Export
 
 Report Layer 只接受已经完成编排的 `PipelineResult`，把现有 Validation、Metrics 和 Diagnostics 结果转换为展示模型与 Excel workbook。它不读取原始文件，不调用 Loader、Validator、Metrics 或 Diagnostics，也不重新计算业务公式、库存快照或诊断阈值。核心原则是：
@@ -1512,6 +1672,8 @@ CrossBorder Ops Radar/
 │   ├── insight_pricing.py        # Versioned Pricing Snapshot 与 Decimal Cost Estimate Core
 │   ├── insight_pricing_catalog.py # Immutable Policy collection 与历史 selection
 │   ├── insight_cost_audit.py     # Cost available/unavailable Audit Metadata 与 exact JSON
+│   ├── insight_retry.py          # Retry eligibility Policy、Decision 与纯 evaluator
+│   ├── insight_attempt_audit.py  # Attempt-level Usage/Cost provenance 与 ordered Trail
 │   ├── report.py                # ReportData 与固定四 Sheet 的 Excel bytes 导出
 │   └── pipeline.py              # 顺序编排与结构化 PipelineResult
 └── tests/
@@ -1527,6 +1689,8 @@ CrossBorder Ops Radar/
     ├── test_insight_pricing.py
     ├── test_insight_pricing_catalog.py
     ├── test_insight_cost_audit.py
+    ├── test_insight_retry.py
+    ├── test_insight_attempt_audit.py
     ├── test_pipeline.py
     ├── test_report.py
     ├── test_app.py
