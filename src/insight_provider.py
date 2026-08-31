@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 from math import isfinite
 from typing import Any, Protocol
@@ -29,17 +30,9 @@ PROVIDER_CONNECTION_FAILED = "PROVIDER_CONNECTION_FAILED"
 PROVIDER_REQUEST_REJECTED = "PROVIDER_REQUEST_REJECTED"
 PROVIDER_UNAVAILABLE = "PROVIDER_UNAVAILABLE"
 INVALID_PROVIDER_RESPONSE = "INVALID_PROVIDER_RESPONSE"
+INVALID_PROVIDER_USAGE = "INVALID_PROVIDER_USAGE"
 PROVIDER_RESPONSE_TOO_LARGE = "PROVIDER_RESPONSE_TOO_LARGE"
 INVALID_PROVIDER_JSON = "INVALID_PROVIDER_JSON"
-
-
-class InsightProvider(Protocol):
-    """Minimal execution boundary implemented by every Insight provider."""
-
-    def generate(self, prompt: InsightPrompt) -> str:
-        """Return one raw JSON response string for the supplied Prompt."""
-
-        ...
 
 
 class InsightProviderError(Exception):
@@ -51,6 +44,112 @@ class InsightProviderError(Exception):
         super().__init__(f"{code}: {message}")
 
 
+def _invalid_provider_response(message: str) -> InsightProviderError:
+    return InsightProviderError(INVALID_PROVIDER_RESPONSE, message)
+
+
+def _invalid_provider_usage(message: str) -> InsightProviderError:
+    return InsightProviderError(INVALID_PROVIDER_USAGE, message)
+
+
+def _validate_token_count(value: object, *, field_name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise _invalid_provider_usage(
+            f"{field_name} 必须是非负整数且不能是 bool。"
+        )
+
+
+@dataclass(frozen=True)
+class ProviderUsage:
+    """Normalized immutable token usage for one Provider generation."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    prompt_cache_hit_tokens: int | None = None
+    prompt_cache_miss_tokens: int | None = None
+    reasoning_tokens: int | None = None
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "prompt_tokens",
+            "completion_tokens",
+            "total_tokens",
+        ):
+            _validate_token_count(getattr(self, field_name), field_name=field_name)
+        if self.total_tokens != self.prompt_tokens + self.completion_tokens:
+            raise _invalid_provider_usage(
+                "total_tokens 必须等于 prompt_tokens + completion_tokens。"
+            )
+
+        cache_values = (
+            self.prompt_cache_hit_tokens,
+            self.prompt_cache_miss_tokens,
+        )
+        if (cache_values[0] is None) != (cache_values[1] is None):
+            raise _invalid_provider_usage(
+                "Prompt cache hit/miss token fields 必须同时存在或同时缺失。"
+            )
+        if cache_values[0] is not None and cache_values[1] is not None:
+            _validate_token_count(
+                cache_values[0],
+                field_name="prompt_cache_hit_tokens",
+            )
+            _validate_token_count(
+                cache_values[1],
+                field_name="prompt_cache_miss_tokens",
+            )
+            if cache_values[0] + cache_values[1] != self.prompt_tokens:
+                raise _invalid_provider_usage(
+                    "Prompt cache hit/miss tokens 之和必须等于 prompt_tokens。"
+                )
+
+        if self.reasoning_tokens is not None:
+            _validate_token_count(
+                self.reasoning_tokens,
+                field_name="reasoning_tokens",
+            )
+            if self.reasoning_tokens > self.completion_tokens:
+                raise _invalid_provider_usage(
+                    "reasoning_tokens 不能超过 completion_tokens。"
+                )
+
+
+@dataclass(frozen=True)
+class ProviderGeneration:
+    """Provider-level content and optional normalized usage metadata."""
+
+    raw_text: str
+    usage: ProviderUsage | None = None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.raw_text, str):
+            raise _invalid_provider_response(
+                "ProviderGeneration.raw_text 必须是 str。"
+            )
+        if self.usage is not None and not isinstance(self.usage, ProviderUsage):
+            raise _invalid_provider_usage(
+                "ProviderGeneration.usage 必须是 ProviderUsage 或 None。"
+            )
+
+
+@dataclass(frozen=True)
+class InsightGenerationResult:
+    """One validated InsightOutput and its Provider usage metadata."""
+
+    output: InsightOutput
+    usage: ProviderUsage | None
+
+
+class InsightProvider(Protocol):
+    """Minimal execution boundary implemented by every Insight provider."""
+
+    def generate(self, prompt: InsightPrompt) -> ProviderGeneration:
+        """Return one explicit Provider generation envelope."""
+
+        ...
+
+
 class MockInsightProvider:
     """A deterministic offline provider that returns one configured response."""
 
@@ -58,21 +157,26 @@ class MockInsightProvider:
         self,
         response: object = "",
         *,
+        usage: ProviderUsage | None = None,
         error: Exception | None = None,
     ) -> None:
         self.response = response
+        self.usage = usage
         self.error = error
         self.call_count = 0
         self.last_prompt: InsightPrompt | None = None
 
-    def generate(self, prompt: InsightPrompt) -> str:
+    def generate(self, prompt: InsightPrompt) -> ProviderGeneration:
         """Capture the call, then return or raise the configured outcome."""
 
         self.call_count += 1
         self.last_prompt = prompt
         if self.error is not None:
             raise self.error
-        return self.response  # type: ignore[return-value]
+        return ProviderGeneration(
+            raw_text=self.response,  # type: ignore[arg-type]
+            usage=self.usage,
+        )
 
 
 def _provider_generate(provider: object) -> Any:
@@ -129,17 +233,17 @@ def _strict_json_loads(raw_response: str) -> object:
     )
 
 
-def generate_insight(
+def generate_insight_with_metadata(
     context: InsightContext,
     *,
     provider: InsightProvider,
-) -> InsightOutput:
-    """Build, execute, parse, and validate one Insight generation request."""
+) -> InsightGenerationResult:
+    """Return validated Insight output together with Provider usage metadata."""
 
     prompt = build_insight_prompt(context)
     generate = _provider_generate(provider)
     try:
-        raw_response = generate(prompt)
+        generation = generate(prompt)
     except (InsightPromptError, InsightOutputError, InsightProviderError):
         raise
     except Exception as exc:
@@ -148,10 +252,21 @@ def generate_insight(
             "Provider 调用失败。",
         ) from exc
 
+    if not isinstance(generation, ProviderGeneration):
+        raise _invalid_provider_response(
+            "Provider 必须返回 ProviderGeneration。"
+        )
+    raw_response = generation.raw_text
     if not isinstance(raw_response, str):
-        raise InsightProviderError(
-            INVALID_PROVIDER_RESPONSE,
-            "Provider response 必须是 str。",
+        raise _invalid_provider_response(
+            "ProviderGeneration.raw_text 必须是 str。"
+        )
+    if generation.usage is not None and not isinstance(
+        generation.usage,
+        ProviderUsage,
+    ):
+        raise _invalid_provider_usage(
+            "ProviderGeneration.usage 必须是 ProviderUsage 或 None。"
         )
     try:
         encoded_response = raw_response.encode("utf-8")
@@ -173,4 +288,15 @@ def generate_insight(
         )
 
     payload = _strict_json_loads(raw_response)
-    return validate_insight_output(payload, context=context)
+    output = validate_insight_output(payload, context=context)
+    return InsightGenerationResult(output=output, usage=generation.usage)
+
+
+def generate_insight(
+    context: InsightContext,
+    *,
+    provider: InsightProvider,
+) -> InsightOutput:
+    """Return only the validated InsightOutput for backward compatibility."""
+
+    return generate_insight_with_metadata(context, provider=provider).output

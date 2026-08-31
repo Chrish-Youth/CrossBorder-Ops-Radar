@@ -2,7 +2,7 @@
 
 CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营数据分析 Demo。项目计划接收 CSV/XLSX 日汇总数据，完成数据质量检查、SKU 指标计算、规则化异常诊断，并生成中文运营报表。
 
-核心运营计算与报表链路不依赖任何大模型。Phase 8.5 在确定性分析完成后提供可选的 DeepSeek AI 解读，但只有用户显式点击生成按钮才会请求外部服务；项目仍不使用数据库，也不包含登录或权限系统。
+核心运营计算与报表链路不依赖任何大模型。确定性分析完成后可由用户显式请求 DeepSeek AI 解读；Phase 8.10 已把离线、版本化定价快照派生的 Cost Audit Metadata 原子写入 Receipt V3，Phase 8.11 进一步加入 immutable Pricing Policy Catalog 与人工核验的更新工作流。只有用户显式点击生成按钮才会请求外部服务；历史 Policy 与 Receipt 不会因 Catalog 后续新增版本而被改写，成本计算不发起网络请求，也不代表 Provider 最终账单。项目仍不使用数据库，也不包含登录或权限系统。
 
 ## 当前阶段
 
@@ -28,7 +28,15 @@ CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨
 - Phase 8.4.1 DeepSeek Provider Hardening completed：系统资源不足错误分类、response content 安全空值检查、真实 SDK 离线序列化和 Client 状态回归已加固。
 - Controlled Live API Smoke completed：真实 Sample 已通过 DeepSeek、strict JSON、Output Validator 与 canonical output boundary，单次请求成功且无 Retry。
 - Phase 8.5 Streamlit AI Insight Integration completed：可选、显式的 AI generation、独立 Session State、stale invalidation、安全错误呈现和结构化 InsightOutput 展示已接入单页应用。
-- Next phase not started：Retry Policy、第二 Provider、Provider Selection、Usage/Cost、token-aware budgeting 与 AI export/audit metadata 均未实现。
+- Phase 8.6 AI Generation Receipt & Audit Metadata completed：每份成功的 validated InsightOutput 都与 immutable Receipt 原子配对，并可独立下载安全 JSON 审计元数据。
+- Phase 8.6.1 Receipt Provenance / Documentation Hardening completed：Generation Details 的 Provider 标签改由历史 Receipt metadata 驱动，并修正 Phase 8.4/8.5 的职责描述。
+- Phase 8.7 Provider Generation Envelope & Usage Metadata completed：Provider Protocol 已迁移为显式 immutable generation envelope，并支持可选、严格校验的 normalized token usage metadata。
+- Phase 8.8 Usage → Receipt V2 / Streamlit Integration completed：normalized Provider Usage 已作为 generation provenance 原子写入 Receipt V2，并在 Generation Details 与 Receipt JSON 中展示。
+- Phase 8.8.1 Receipt Representability & Presentation Safety Hardening completed：Receipt V2 的 512 位十进制可表示性边界与 passive presentation safety boundary 已加固。
+- Phase 8.9 Versioned Pricing Policy & Cost Estimation Core completed：当前 DeepSeek Flash 定价已作为明确版本的 immutable offline snapshot 保存，并可根据完整 Usage、适用时间与 UTC tier 精确派生 Decimal 成本估算。
+- Phase 8.10 Cost Audit Metadata → Receipt V3 / Streamlit Integration completed：request-start pricing reference、available/unavailable Cost Audit、exact Decimal JSON、Receipt V3 与 Estimated Cost 展示已接入原子 AI generation state。
+- Phase 8.11 Versioned Pricing Policy Catalog & Refresh Workflow completed：按 provider/model/reference timestamp 选择历史适用 immutable snapshot，并冻结只新增、不修改历史 Policy 的人工维护流程。
+- Next phase not started：Retry Policy、token-aware budgeting、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账均未实现。
 
 当前已实现的数据流为：
 
@@ -65,13 +73,25 @@ PipelineResult
    │    InsightProvider
    │    (Offline Mock or optional DeepSeek Adapter)
    │       ↓
+   │    ProviderGeneration(raw_text, usage?)
+   │       ↓
    │    Strict Raw JSON Parsing
    │       ↓
    │    Context-aware Output Validation
    │       ↓
-   │    InsightOutput
+   │    InsightGenerationResult(output, usage?)
    │       ↓
-   │    Streamlit AI Insights
+   │    InsightOutput (legacy API remains available)
+   │       ↓
+   │    Pricing Policy Catalog
+   │    (provider/model/reference-time selection; no network)
+   │       ↓
+   │    Cost Audit Metadata
+   │    (selected immutable pricing snapshot)
+   │       ↓
+   │    AI Generation Receipt V3
+   │       ↓
+   │    Streamlit AI Insights + Estimated Cost
    │
    └──→ Report Model
            ↓
@@ -86,7 +106,7 @@ PipelineResult
 - 使用透明、可配置的规则识别经营异常。
 - 在页面展示结果并生成可下载的中文 Excel 运营报表。
 
-SKU 指标聚合已在 Phase 3 实现，确定性规则诊断已在 Phase 4 实现，统一业务入口已在 Phase 5 实现，Report Model 与 Excel 导出已在 Phase 6 实现，并已在 Phase 6.1 完成完整性加固；Phase 7 已提供可直接使用的 Streamlit 单页应用。Phase 8.1/8.1.1 已提供并加固 Structured Insight Context，Phase 8.2/8.2.1 已冻结并加固 Prompt 与预期 LLM Output 契约，Phase 8.3/8.3.1 已提供并加固完全离线的 Provider 抽象和 Mock 调用链，Phase 8.4 新增可选 DeepSeek transport adapter。真实 Provider 尚未接入 AI UI，也不会影响确定性的运营分析主链路。
+SKU 指标聚合已在 Phase 3 实现，确定性规则诊断已在 Phase 4 实现，统一业务入口已在 Phase 5 实现，Report Model 与 Excel 导出已在 Phase 6 实现，并已在 Phase 6.1 完成完整性加固；Phase 7 已提供可直接使用的 Streamlit 单页应用。Phase 8.1/8.1.1 已提供并加固 Structured Insight Context，Phase 8.2/8.2.1 已冻结并加固 Prompt 与预期 LLM Output 契约，Phase 8.3/8.3.1 已提供并加固完全离线的 Provider 抽象和 Mock 调用链，Phase 8.4 新增可选 DeepSeek transport adapter。真实 DeepSeek Provider 已作为显式、可选的 AI Insights 路径接入 Streamlit UI，并且不影响确定性的运营分析主链路。
 
 ## 输入数据契约
 
@@ -808,26 +828,33 @@ Phase 8.2/8.2.1 本身不包含 Root Cause engine、自动 Recommendation execut
 
 ## Provider Abstraction + Mock Provider
 
-Phase 8.3 在既有 Prompt 与 Output Validator 之间加入最小、provider-independent 的执行边界；Phase 8.3.1 只加固该边界，不改变公开 API：
+Phase 8.3 在既有 Prompt 与 Output Validator 之间加入最小、provider-independent 的执行边界，Phase 8.3.1 加固该边界；Phase 8.7 将 Provider 的 raw string 返回值正式迁移为显式 Generation Envelope：
 
 ```text
 InsightContext
 → build_insight_prompt()
 → InsightPrompt
 → InsightProvider.generate()
-→ raw response str
+→ ProviderGeneration(raw_text, usage?)
 → raw UTF-8 byte boundary
 → strict JSON parsing
 → validate_insight_output()
-→ InsightOutput
+→ InsightGenerationResult(output, usage?)
 ```
 
-Provider 只是执行器：接收 `InsightPrompt` 并返回完整的 raw JSON string。Provider 不得返回 dict 或 `InsightOutput`，也不负责 Prompt、Schema、scope、evidence、Metrics、Diagnostics、canonical Output size 或其他业务规则。上层统一入口为：
+Provider 只是执行器：接收 `InsightPrompt` 并返回 `ProviderGeneration`，其中 `raw_text` 是完整 raw JSON string，`usage` 是可选的 normalized Provider usage。Provider 不得返回裸 `str`、dict 或 `InsightOutput`，也不负责 Prompt、Schema、scope、evidence、Metrics、Diagnostics、canonical Output size 或其他业务规则。公开接口为：
 
 ```python
 class InsightProvider(Protocol):
-    def generate(self, prompt: InsightPrompt) -> str:
+    def generate(self, prompt: InsightPrompt) -> ProviderGeneration:
         ...
+
+def generate_insight_with_metadata(
+    context: InsightContext,
+    *,
+    provider: InsightProvider,
+) -> InsightGenerationResult:
+    ...
 
 def generate_insight(
     context: InsightContext,
@@ -837,11 +864,153 @@ def generate_insight(
     ...
 ```
 
-`generate_insight()` 只执行一次调用，不自动 Retry：使用现有 Builder 构建 Prompt、调用 `provider.generate()`、检查 raw response、解析 strict JSON，并把 decoded payload 原样交给现有 `validate_insight_output()`。它不接受 PipelineResult、CSV 或 DataFrame，也不重新实现任何 Prompt 或 Output 规则。Prompt 构建失败时 Provider 不会被调用。
+`generate_insight_with_metadata()` 只执行一次调用，不自动 Retry：使用现有 Builder 构建 Prompt、调用 `provider.generate()`、验证 `ProviderGeneration`、检查 `raw_text`、解析 strict JSON，并把 decoded payload 原样交给现有 `validate_insight_output()`；只有 Output 完全通过验证后才返回 `InsightGenerationResult(output, usage)`。`generate_insight()` 是向后兼容 API，调用同一核心流程但只返回 `InsightOutput`。两者都不接受 PipelineResult、CSV 或 DataFrame，也不重新实现任何 Prompt 或 Output 规则。Prompt 构建失败时 Provider 不会被调用。
+
+### Provider Generation 与 Usage Contract
+
+`ProviderGeneration` 是 immutable Provider-level envelope：`raw_text: str` 与 `usage: ProviderUsage | None`。它只表示 transport 与 response extraction 成功，不代表 raw text 已满足 InsightOutput 契约；strict JSON 与 Output Validator 仍是后续必经边界。旧 Provider 若继续返回裸 `str`，会产生 `INVALID_PROVIDER_RESPONSE`，不会被静默包装。
+
+`ProviderUsage` 同样 immutable，字段为 `prompt_tokens`、`completion_tokens`、`total_tokens`，以及可选的 `prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` 和 `reasoning_tokens`。所有非空 token 值必须是非负 Python `int` 且不能是 `bool`；`total_tokens == prompt_tokens + completion_tokens`；cache hit/miss 必须同时存在或同时缺失，存在时两者之和必须等于 prompt tokens；reasoning tokens 不得超过 completion tokens。Python arbitrary-precision integer 合法，不引入 DataFrame/Int64 上限。
+
+该任意精度能力只属于 Generic Provider contract。Receipt V3 在持久化前继续执行 Phase 8.8.1 冻结的 `MAX_RECEIPT_TOKEN_DECIMAL_DIGITS = 512` 十进制可表示性边界：Usage 的六个非空 token count 均不得大于 `10**512 - 1`。该边界通过纯 numeric comparison 检查，不先调用 `str()`，也不修改 Python 进程级 integer-to-decimal policy。它只保证受支持 Python runtime 下标准库 JSON 序列化和 UI 十进制展示的稳定性，不是 Provider、DeepSeek model、context、billing 或真实 token usage 上限；超界 Usage 仍可作为合法 `ProviderUsage` 存在，但不能进入 Receipt V3。
+
+Usage metadata 可以缺失：`usage=None` 不会使其他方面合法的 generation 失败。Usage 一旦存在但类型或内部关系不可信，就以 `InsightProviderError(code="INVALID_PROVIDER_USAGE")` 拒绝，不会静默丢弃或重新计算。Usage 不计入 100,000-byte raw response limit，也不计入 64,000-byte canonical InsightOutput limit。
+
+### Versioned Pricing Policy 与 Cost Estimation Core
+
+Phase 8.9 将三个职责保持分离：`ProviderUsage` 是 Provider 返回的 observed fact；`PricingPolicy` 是应用代码中带版本与来源的定价 snapshot；`GenerationCostEstimate` 是二者结合显式 pricing reference timestamp 后得到的 derived estimate。Cost 不进入 `ProviderUsage` 或 `ProviderGeneration`；Phase 8.10 通过独立 `CostAuditMetadata` 封装 estimate 或稳定 unavailable reason，再把该历史审计对象写入 Receipt V3 与 Streamlit。
+
+公开的最小 Pricing API 为：
+
+```python
+@dataclass(frozen=True)
+class TokenPricingRates:
+    prompt_cache_hit_usd_per_million: Decimal
+    prompt_cache_miss_usd_per_million: Decimal
+    completion_usd_per_million: Decimal
+
+@dataclass(frozen=True)
+class PricingPolicy:
+    version: str
+    provider: str
+    model: str
+    currency: str
+    unit_tokens: int
+    effective_from_utc: datetime
+    verified_at_utc: datetime
+    source: str
+    peak_weekdays_utc: tuple[int, ...]
+    peak_windows_utc: tuple[tuple[time, time], ...]
+    peak_rates: TokenPricingRates
+    off_peak_rates: TokenPricingRates
+
+@dataclass(frozen=True)
+class GenerationCostEstimate:
+    version: str
+    pricing_policy_version: str
+    provider: str
+    model: str
+    currency: str
+    pricing_tier: str
+    pricing_reference_at: str
+    prompt_cache_hit_cost: Decimal
+    prompt_cache_miss_cost: Decimal
+    completion_cost: Decimal
+    total_estimated_cost: Decimal
+```
+
+当前 snapshot identity 为：
+
+```text
+Pricing Policy Version: deepseek-v4-flash-2026-08-16-v1
+Cost Estimate Version:  1
+Provider / Model:       deepseek / deepseek-v4-flash
+Effective From:         2026-08-16T16:00:00Z
+Verified At:            2026-08-30T04:50:16Z
+Currency:               USD
+Unit:                   1,000,000 tokens
+Source:                 https://api-docs.deepseek.com/quick_start/pricing/
+```
+
+这份 snapshot 是 2026-08-30 人工核对的 application data，不是运行时获取的实时价格。DeepSeek 可能调整产品价格，因此该版本以后可能变旧；应用不会 HTTP GET、scrape 或自动更新定价。来源为 [DeepSeek official Models & Pricing](https://api-docs.deepseek.com/quick_start/pricing/)。
+
+| Tier | Input Cache Hit / 1M | Input Cache Miss / 1M | Output / 1M |
+| --- | ---: | ---: | ---: |
+| `off_peak` | USD 0.007 | USD 0.22 | USD 0.66 |
+| `peak` | USD 0.014 | USD 0.44 | USD 1.32 |
+
+Peak 使用 UTC half-open intervals `[start, end)`：Monday–Friday 的 `01:00–04:00` 和 `06:00–10:00`；其他时段及周末均为 `off_peak`。调用方必须显式传入 timezone-aware `occurred_at`，Resolver 先按 instant 转成 UTC；naive datetime 被拒绝，早于 `effective_from_utc` 的时间不会套用当前价格。Pricing Core 不读取 `datetime.now()`，因此同一输入可 replay、audit 和确定性测试。产品层把用户显式点击后、Provider invocation 之前捕获的一次本地 UTC request-start timestamp 作为 `pricing_reference_at`；它不是 Receipt `generated_at`，也不是 Provider 确认的 billing timestamp。
+
+完整 cache hit/miss breakdown 是输入成本估算的必要条件。`usage=None` 使用 `COST_ESTIMATE_UNAVAILABLE / USAGE_UNAVAILABLE`；cache pair 缺失使用 `COST_ESTIMATE_UNAVAILABLE / CACHE_BREAKDOWN_UNAVAILABLE`，不会假设全部 cache hit 或全部 cache miss。Provider/model 不匹配或 Policy 尚未生效使用 `PRICING_POLICY_NOT_APPLICABLE`，并分别携带 `POLICY_NOT_APPLICABLE` / `POLICY_NOT_EFFECTIVE` reason；malformed policy、rate、timestamp 或调用类型使用 `INVALID_PRICING_INPUT`。
+
+成本公式为：
+
+```text
+prompt_cache_hit_cost  = hit_tokens  × hit_rate    / 1,000,000
+prompt_cache_miss_cost = miss_tokens × miss_rate   / 1,000,000
+completion_cost        = output_tokens × output_rate / 1,000,000
+total_estimated_cost   = 三个 component 的精确和
+```
+
+Rates 与全部 Cost 均使用 finite、非负的 `Decimal`；不接受 runtime float，不按美分或固定小数位 rounding。计算通过 `int.bit_length()` 推导局部 Decimal precision，不通过 `str(token)` 决定位数；`10**5000` Usage 已有精确回归。`reasoning_tokens` 是 completion usage 的 informational subset，不会单独再次收费，输入成本也不会重复叠加 `prompt_tokens`。
+
+`GenerationCostEstimate` 只是根据本地 versioned snapshot 与 reference timestamp 得出的 deterministic estimate，不是 Provider 返回的 invoice amount、final billed charge 或财务账单。Phase 8.10 只展示并下载 Receipt 中已保存的 estimate，不在 rerender 或 download 时重新计算；仍不做 Currency conversion、CNY/RMB、实际账单对账、月度花费、Retry、spending limit 或 token budgeting。
+
+### Pricing Policy Catalog 与历史选择
+
+Phase 8.11 在 sealed Pricing Core 之外增加独立、冻结的 Catalog：
+
+```python
+@dataclass(frozen=True)
+class PricingPolicyCatalog:
+    policies: tuple[PricingPolicy, ...]
+
+def select_pricing_policy(
+    *,
+    provider: str,
+    model: str,
+    pricing_reference_at: datetime,
+    catalog: PricingPolicyCatalog | None = None,
+) -> PricingPolicy:
+    ...
+```
+
+Catalog 允许为空；所有成员必须是 `PricingPolicy`，Policy version 在整个 Catalog 中全局唯一，同一个 `provider + model + effective_from_utc` 也只能存在一条记录。`UNSELECTED_PRICING_POLICY_VERSION = "unselected"` 是 Pricing Policy version namespace 的 reserved audit identity，任何放入 Catalog 的真实 Policy 都不得使用该 version。Catalog input 不要求预排序，运行中不提供 append、replace 或其他 mutable registry 操作。Production Catalog 当前只有一份真实、已核验的 snapshot：
+
+```text
+deepseek-v4-flash-2026-08-16-v1
+```
+
+Production 不包含测试用的未来价格、假设性 v2 或第二 Provider。对于 exact provider/model，Selector 只依据 UTC `effective_from_utc` 选择：
+
+> Selected policy = the policy with the greatest `effective_from_utc` timestamp that is less than or equal to the pricing reference timestamp.
+
+因此后续 Policy 的 `effective_from_utc` 会隐式结束前一版区间，不需要给 sealed `PricingPolicy` 增加 `effective_to`。Reference 恰好等于新 Policy 的生效时间时选择新 Policy；`verified_at_utc`、version 字符串和 Catalog tuple 顺序均不参与选择。Timezone-aware 非 UTC reference 按同一 instant 规范化为 UTC，naive datetime 不会被假定为 UTC。Provider/model 没有任何匹配项时使用 `POLICY_NOT_APPLICABLE`；存在匹配项但早于第一版生效时间时使用 `POLICY_NOT_EFFECTIVE`。
+
+默认 App Cost Audit 不指定某个 Policy，而是按 request-start reference 从 Production Catalog 选择。`estimate_generation_cost(..., policy=X)` 继续表示“显式使用 snapshot X 进行受控 evaluation”；`build_cost_audit_metadata(..., policy=X)` 同样保留该 replay/debug override，且 explicit policy 优先、不会访问同时传入的 Catalog。这个显式语义不表示 X 在该时间仍是 Catalog 默认适用版本。
+
+历史 Receipt 只保存生成当时实际选择的 `pricing_policy_version` 和金额。以后向 Catalog 加入 Policy B，不会 invalidate、重算、回填或修改已保存 Policy A 的 Receipt；被动 rerun 与下载只读取 `receipt.cost`。只有用户显式 Regenerate，才会用新的 request-start reference 重新选择并生成一份新的 Receipt。Catalog 本身不需要独立 version，因为审计 identity 是具体的 `PricingPolicy.version`。
+
+### Pricing Policy Update Workflow
+
+官方定价语义发生变化时，维护流程固定为：
+
+1. 直接核验 Provider 的 authoritative 官方定价文档，不依赖搜索摘要或模型记忆。
+2. 记录官方 effective timestamp；无法确认生效时间时不发布新 Policy。
+3. 记录本次人工 verification timestamp 和实际核验的 source URL。
+4. 创建一份新的 immutable `PricingPolicy`，不得修改历史 Policy constant 的 rate、时间、窗口、version、source 或 `verified_at`。
+5. 使用新的稳定 version；同日再次修订可以递增 `-v2` 等后缀，并且不得使用 `"unselected"` 等 reserved audit identity。
+6. 只有 rate、effective time、weekday/window、billing unit、currency 或 model applicability 等定价语义变化才新增 snapshot；单纯重新核验且语义未变不新增。
+7. 把新 Policy 追加到 Production Catalog；插入顺序不能影响历史选择。
+8. 增加 source/rate/window regression，以及生效边界前一刻、恰好边界和边界后的 selection tests。
+9. 增加 `source → policy → selector → cost` external-source narrow review；官方来源相互冲突时先人工解决，不发布新 Catalog。
+10. 运行 focused、sealed 和 full test suite，通过后才能发布。
+
+该 Workflow 是 human-verified、code-versioned、tested 的维护流程，不是 runtime HTTP refresh、网页 scraper、定时任务、background sync 或自动价格更新。自动抓取可能因页面格式漂移、局部更新和静默调价破坏可重放的历史审计，因此 Production generation 的 pricing network calls 始终为零。官方若明确宣布追溯生效的新价格，则以其真实 `effective_from_utc` 插入新 Policy；Selector 不依赖插入顺序，历史已生成 Receipt 仍不会自动回算。
 
 ### Offline Mock Provider
 
-`MockInsightProvider` 是完全离线、确定性的 test double。构造时传入固定 response string，`generate()` 不解析 Prompt、不根据 SKU 或 Diagnostics 推理，只返回原字符串；测试可通过 `call_count` 和 `last_prompt` 检查调用次数与 Prompt capture。也可显式配置普通 Exception 来验证 failure path。不同 Mock 实例不共享状态，不使用 random、timestamp、UUID、sleep 或网络。
+`MockInsightProvider` 是完全离线、确定性的 test double。构造时继续传入固定 response string，并可选传入 `ProviderUsage`；`generate()` 不解析 Prompt、不根据 SKU 或 Diagnostics 推理，而是返回 `ProviderGeneration(raw_text=response, usage=usage)`。测试可通过 `call_count` 和 `last_prompt` 检查调用次数与 Prompt capture。也可显式配置普通 Exception 来验证 failure path，且 error 继续优先于 response。不同 Mock 实例不共享状态，不使用 random、timestamp、UUID、sleep 或网络，也不保存 `last_usage` side channel。
 
 Phase 8.3 没有 OpenAI、DeepSeek、Qwen 或其他 SDK，没有 HTTP、API key、`.env`、Provider Credentials、ModelConfig、Timeout、Streaming、真实 token counting、Rate-limit handling 或 Streamlit AI UI。
 
@@ -884,7 +1053,8 @@ Provider Layer 不 strip fence、不提取第一个 `{...}`、不修复逗号。
 | --- | --- |
 | Provider 缺少可调用的 `generate()` | `InsightProviderError / INVALID_PROVIDER` |
 | Provider 调用抛普通 Exception | `InsightProviderError / PROVIDER_FAILURE` |
-| Provider 返回非 str 或无法编码为 UTF-8 | `InsightProviderError / INVALID_PROVIDER_RESPONSE` |
+| Provider 未返回 `ProviderGeneration`，或 raw text 类型/编码无效 | `InsightProviderError / INVALID_PROVIDER_RESPONSE` |
+| Usage 已提供但类型或内部关系无效 | `InsightProviderError / INVALID_PROVIDER_USAGE` |
 | raw response 超过 100,000 UTF-8 bytes | `InsightProviderError / PROVIDER_RESPONSE_TOO_LARGE` |
 | raw string 不是 strict JSON | `InsightProviderError / INVALID_PROVIDER_JSON` |
 | Prompt 输入或 Prompt size 无效 | 原始 `InsightPromptError` |
@@ -893,7 +1063,7 @@ Provider Layer 不 strip fence、不提取第一个 `{...}`、不修复逗号。
 
 Provider runtime failure 和 response encoding failure 只使用稳定 public message，原始普通异常通过 `__cause__` 保留，不把内部 detail 写入业务 message。Strict JSON parsing failure 不保留原 parser exception，避免 `JSONDecodeError.doc` 间接保存完整 raw response；因此其 `__cause__` 与 `__context__` 均为空。`InsightPromptError`、`InsightOutputError` 和 Provider 自己抛出的 `InsightProviderError` 都不会被重新包装；`KeyboardInterrupt` 与 `SystemExit` 不会被捕获。Phase 8.3/8.3.1 没有自动 Retry，每次 `generate_insight()` 最多调用 Provider 一次。
 
-Phase 8.3 完成 Provider Abstraction、Mock Provider、strict raw response boundary 和离线 E2E，Phase 8.3.1 完成 strict numeric JSON、response encoding 与 malformed-response privacy hardening。Phase 8.4 在不改变上述通用编排的前提下，新增下一节所述 DeepSeek Adapter。
+Phase 8.3 完成 Provider Abstraction、Mock Provider、strict raw response boundary 和离线 E2E，Phase 8.3.1 完成 strict numeric JSON、response encoding 与 malformed-response privacy hardening。Phase 8.4 新增下一节所述 DeepSeek Adapter；Phase 8.7 只迁移 Provider 返回契约并增加 Usage metadata，不改变既有 Prompt、JSON 或 Output validation 语义。
 
 ## DeepSeek Real Provider Integration
 
@@ -904,7 +1074,7 @@ class DeepSeekInsightProvider:
     def __init__(self) -> None:
         ...
 
-    def generate(self, prompt: InsightPrompt) -> str:
+    def generate(self, prompt: InsightPrompt) -> ProviderGeneration:
         ...
 ```
 
@@ -967,7 +1137,7 @@ client.chat.completions.create(
 
 System Prompt 和 User Prompt 按原字符串透传，不增加第三条 message，也不加入 Provider-specific 指令。现有 Prompt 已明确要求只输出一个 JSON object，并给出精确字段形状；这是 DeepSeek JSON Mode 的必要配套约束。
 
-JSON Mode 只约束模型响应为合法 JSON，不能取代应用自己的可信边界。Adapter 返回未经 `strip()`、未经 `json.loads()` 的原始 `message.content`，通用 `generate_insight()` 仍按顺序执行：
+JSON Mode 只约束模型响应为合法 JSON，不能取代应用自己的可信边界。Adapter 将未经 `strip()`、未经 `json.loads()` 的原始 `message.content` 放入 `ProviderGeneration.raw_text`，通用编排仍按顺序执行：
 
 ```text
 MAX_PROVIDER_RESPONSE_BYTES
@@ -982,11 +1152,11 @@ MAX_PROVIDER_RESPONSE_BYTES
 
 ### Response Extraction
 
-Adapter 先检查 `response.choices[0].finish_reason`，只有 `finish_reason == "stop"` 才读取 `message.content`；`reasoning_content` 和 `usage` 始终忽略。最终映射固定为：
+Adapter 先检查 `response.choices[0].finish_reason`，只有 `finish_reason == "stop"` 才读取 `message.content`；`reasoning_content` 继续忽略。content 合法后，Adapter 从 typed SDK response 的 `response.usage` 规范化 `ProviderUsage`：标准 prompt/completion/total token 字段来自 `CompletionUsage`，DeepSeek cache 扩展由 SDK 保存在 `model_extra` 并支持属性访问，reasoning token 来自 `completion_tokens_details.reasoning_tokens`。缺失 usage 返回 `usage=None`；存在但 malformed 的 usage 产生脱敏的 `INVALID_PROVIDER_USAGE`。最终映射固定为：
 
 | `finish_reason` | Adapter behavior |
 | --- | --- |
-| `stop` | content 是可安全检查的非空 string 时原样返回 |
+| `stop` | content 是可安全检查的非空 string 时返回 `ProviderGeneration` |
 | `length` | `INVALID_PROVIDER_RESPONSE` |
 | `content_filter` | `INVALID_PROVIDER_RESPONSE` |
 | `tool_calls` | `INVALID_PROVIDER_RESPONSE` |
@@ -1015,7 +1185,7 @@ DeepSeek 官方说明 `finish_reason="length"` 时内容可能被截断，因此
 
 映射后的 public message 不包含 API Key、完整 Prompt、system/user prompt、request body、Authorization header、SDK raw message、provider response body 或 response content。已知 SDK/API error 和 Adapter 内部意外 exception 均不 chain 原始第三方异常，避免通过 request/response metadata 间接保留敏感内容。`InsightProviderError` 交给通用 `generate_insight()` 后会原样传播，不会被错误包装为新的 `PROVIDER_FAILURE`。
 
-Phase 8.4 没有任何自动 Retry：CrossBorder Adapter 不循环调用，OpenAI SDK 明确使用 `max_retries=0`，包括 Timeout、429、500 和 503 都在第一次失败后直接返回稳定错误。当前也没有 Provider fallback、第二 Provider、Usage/Cost metadata、价格计算、token-aware Prompt budgeting、Streaming、Async、Tools 或 Streamlit AI UI。
+Phase 8.4 没有任何自动 Retry：CrossBorder Adapter 不循环调用，OpenAI SDK 明确使用 `max_retries=0`，包括 Timeout、429、500 和 503 都在第一次失败后直接返回稳定错误。Phase 8.4 的职责仅限真实 Provider Adapter，本阶段本身不负责 Streamlit UI；真实 DeepSeek Provider 已在 Phase 8.5 作为显式、可选的 AI Insights 路径接入 Streamlit。Phase 8.7 在 Provider Layer 规范化 Usage，Phase 8.8 将其接入 Receipt V2，Phase 8.10 则在 Provider Layer 外部接入 Cost Audit 与 Receipt V3；Provider Adapter 仍不包含价格、Provider fallback、第二 Provider、token-aware Prompt budgeting、Streaming、Async 或 Tools。
 
 自动化 DeepSeek 测试使用 monkeypatched fake client，以及真实 `openai==3.5.0` SDK 配合内存 `httpx2.MockTransport`。测试会在不触发 DNS 或外部网络的情况下验证最终 HTTP URL、method、request JSON、Thinking/JSON Mode 参数，以及 429/500/503 的单次请求行为。即使测试机器存在 `DEEPSEEK_API_KEY`，pytest 也不会访问 DeepSeek。
 
@@ -1177,6 +1347,7 @@ Upload CSV/XLSX
 → Download Excel Report
 → Explicit Generate AI Insights (optional)
 → Validated InsightOutput display
+→ Generation Details + Receipt JSON download
 ```
 
 应用只负责上传、参数映射、调用、展示、Session State 和错误呈现。上传内容以原始 bytes 和显式 filename 传给 `run_pipeline()`；UI 不使用 Pandas 自行读取上传文件、不猜测文件格式，也不重新实现 Validation、Metrics、Inventory、Diagnostic Threshold 或 Excel 数据构建。
@@ -1234,17 +1405,70 @@ App 只调用封板后的公共链路：
 PipelineResult
 → build_insight_context()
 → DeepSeekInsightProvider()
-→ generate_insight()
-→ validated InsightOutput
+→ capture one local UTC request-start pricing reference
+→ generate_insight_with_metadata()
+→ InsightGenerationResult(validated output, normalized usage | None)
+→ build_cost_audit_metadata(..., pricing_reference_at=...)
+  → select_pricing_policy(provider/model/reference)
+  → existing estimate_generation_cost(selected policy)
+→ build_insight_generation_receipt(..., usage=..., cost=...)
 ```
 
-Provider 只在按钮事件内构造，不在 import 或页面启动时构造，也不保存在 Session State。`DEEPSEEK_API_KEY` 只由运行环境提供，App 不提供 Key 输入框；没有 Key 时，上传、确定性分析、Metrics、Diagnostics 和 Excel 下载仍正常工作，只有点击 AI 按钮时显示安全配置提示。
+App 不导入或指定某一版 PricingPolicy，也不提供 Policy selector UI；Catalog routing 由 Cost Audit Builder 内部负责。Provider 只在按钮事件内构造，不在 import 或页面启动时构造，也不保存在 Session State。`DEEPSEEK_API_KEY` 只由运行环境提供，App 不提供 Key 输入框；没有 Key 时，上传、确定性分析、Metrics、Diagnostics 和 Excel 下载仍正常工作，只有点击 AI 按钮时显示安全配置提示。
 
-AI Session State 与 PipelineResult/ReportData 分离，只保存 `ai_output`、安全的 error code/message 和 `ai_signature`。`ai_output` 必须是已经通过 Generic Boundary 与 Output Validator 的 `InsightOutput`；Session State 不保存 API Key、Provider/Client、Prompt、raw JSON 或 raw response。AI signature 由当前 analysis signature、Insight Context/Prompt/Output version 和固定 DeepSeek model 组成，不包含 API Key。文件名、上传 bytes 或 `group_by` 改变会在渲染前清除旧 AI Output 与错误；相同签名的普通 rerender 和重新分析保留已有付费结果。
+AI Session State 与 PipelineResult/ReportData 分离，只保存 `ai_output`、`ai_receipt`、安全的 `ai_error_code` / `ai_error_message` 和 `ai_signature` 五个字段；不新增独立 `ai_usage`、`ai_cost`、`ai_cost_estimate`、`ai_pricing` 或 `ai_pricing_reference_at`。`ai_output` 必须是已经通过 Generic Boundary 与 Output Validator 的 `InsightOutput`；`ai_receipt` 必须是与该 Output 同次生成的 `InsightGenerationReceipt`，Usage 与 Cost Audit 只作为该 Receipt 内的 generation provenance 保存。Session State 不保存 API Key、Provider/Client、Prompt、raw JSON 或 raw response。AI signature 由当前 analysis signature、Insight Context/Prompt/Output version 和固定 DeepSeek model 组成，不包含 API Key。文件名、上传 bytes 或 `group_by` 改变会在渲染前同时清除旧 Output、Receipt、Usage、Cost 与错误；相同签名的普通 rerender 和重新分析保留已有完整配对结果。A→B→A 不恢复旧结果，也不建立 AI 缓存。
 
-首次 AI generation 失败时只显示按 stable code 映射的安全产品文案，不产生 partial output，也不影响当前 Validation、Metrics、Diagnostics、Excel 或 Pipeline status。已有成功结果后的 Regenerate 失败会保留并明确标注上一份成功 Output；成功 Regenerate 才替换旧 Output 并清除错误。用户之后再次点击属于新的显式请求，不是自动 Retry。
+首次 AI generation 失败时只显示按 stable code 映射的安全产品文案，不产生 partial output 或 Receipt，也不影响当前 Validation、Metrics、Diagnostics、Excel 或 Pipeline status。`INVALID_PROVIDER_USAGE`、`INVALID_COST_AUDIT`、`INVALID_PRICING_INPUT` 与 `INVALID_PRICING_CATALOG` 使用安全、脱敏文案。已知的 Cost unavailable（Usage 缺失、cache breakdown 缺失、Policy 尚未生效或不适用）不是 generation error，仍会生成 Receipt V3；Catalog corruption、非法 Pricing input 或 unexpected Cost exception 则使整次 generation fail closed。已有成功结果后的 Regenerate hard failure 会同时保留并明确标注上一份 Output + Receipt（含旧 Usage/Cost）；成功 Regenerate 即使新 Cost unavailable，也会把整份新 Output + Receipt 原子替换并清除错误。Receipt Builder 失败同样不保存孤立 Output，也不自动重试 Provider。
 
-AI Output 按 Validator 保留的顺序展示 Executive Summary、Scope、Confidence、Observation、Evidence Codes、Possible Explanations、Recommended Checks 和 Overall Limitations；`priority_insights=[]` 是合法空状态。UI 不展示 Prompt、raw JSON、token、费用，不重新计算指标，也不重新验证 Output Schema。界面明确声明：Diagnostic Signals 是 observations，Possible Explanations 是 hypotheses，Recommended Checks 是 investigations，并非已证实的 Root Cause 或保证有效的行动。
+旧 Session 中只有 Output、只有 Receipt、Receipt V1 或 Receipt V2 时会安全清除，不现场伪造 `pricing_reference_at`，也不按当前价格升级历史 Receipt；用户必须显式重新生成。V3 的 `usage=None + cost.status="unavailable"` 是合法当前状态，不视为 legacy。清理 legacy AI state 不调用 Provider，并保留当前 Pipeline、Metrics、Diagnostics 与 Excel。用户之后再次点击属于新的显式请求，不是自动 Retry。
+
+AI Output 按 Validator 保留的顺序展示 Executive Summary、Scope、Confidence、Observation、Evidence Codes、Possible Explanations、Recommended Checks 和 Overall Limitations；`priority_insights=[]` 是合法空状态。UI 不展示 Prompt 或 raw JSON，不重新计算指标，也不重新验证 Output Schema。Token Usage 与 Estimated Cost 只从历史 Receipt 的 `usage` 和 `cost` 读取；它们不修改下一次请求参数、不驱动预算限制，也不在 rerender 时按当前时间或当前 Policy 重算。界面明确声明：Diagnostic Signals 是 observations，Possible Explanations 是 hypotheses，Recommended Checks 是 investigations，并非已证实的 Root Cause 或保证有效的行动。
+
+### AI Generation Receipt
+
+`InsightGenerationReceipt` 是一个独立于 `InsightOutput` 的 immutable generation envelope，Receipt Contract 使用独立的 `INSIGHT_RECEIPT_VERSION = "3"`。Receipt 只在 validated Output、optional normalized Usage 和 Cost Audit Metadata 都构建成功后创建；`generated_at` 使用 receipt construction 时的 timezone-aware UTC ISO 8601，与 Cost 的 request-start `pricing_reference_at` 是两个不同时间语义。
+
+Receipt V3 固定包含 14 个顶层 JSON 字段：`version`、`generated_at`、完整 `analysis_signature`、canonical `group_by`、`context_version`、`prompt_version`、`output_version`、`provider`、`model`、`metric_record_count`、`diagnostic_signal_count`、`priority_insight_count`、`usage` 和必填的 `cost`。`usage` 固定为 nested object 或 `null`；存在时明确包含 `prompt_tokens`、`completion_tokens`、`total_tokens`、`prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` 和 `reasoning_tokens`。Receipt 只接受 immutable `ProviderUsage`，不保存 SDK object、不估算 token，也不复制 token arithmetic 验证。分析签名直接消费现有 deterministic identity，不在 Receipt Layer 重新计算 hash；`group_by` 来自当前分析配置，不从 Output scope 倒推。三个计数分别来自 `InsightContext.metric_records`、`InsightContext.diagnostic_signals` 和 `InsightOutput.priority_insights`。
+
+Receipt V3 的 Usage 继续受独立的 512 位十进制 persistence/presentation bound 约束。恰好 512 位的非负整数可构建、显示并序列化；513 位及以上在 Receipt construction 阶段以脱敏的 `INVALID_RECEIPT_INPUT` fail closed，因此发生在 AI Output/Receipt pair 提交 Session 之前。Receipt Layer 只检查 decimal representability，ProviderUsage 的非负、bool、总数、cache 和 reasoning arithmetic invariants 仍完全由 Provider Layer 负责。Token counts 在 JSON 中继续是 integer number，不转为 string。
+
+### Cost Audit Metadata
+
+Cost Audit 使用独立 `COST_AUDIT_VERSION = "1"`，与 Pricing Policy version、Cost Estimate version 和 Receipt version 分离。公开接口为：
+
+```python
+@dataclass(frozen=True)
+class CostAuditMetadata:
+    version: str
+    status: str
+    pricing_policy_version: str
+    pricing_reference_at: str
+    estimate: GenerationCostEstimate | None
+    unavailable_reason: str | None
+
+def build_cost_audit_metadata(
+    usage: ProviderUsage | None,
+    *,
+    provider: str,
+    model: str,
+    pricing_reference_at: datetime,
+    policy: PricingPolicy | None = None,
+    catalog: PricingPolicyCatalog | None = None,
+) -> CostAuditMetadata:
+    ...
+```
+
+未显式提供 `policy` 时，Builder 在函数调用期读取 Production Catalog 并完成选择；显式 `policy` 优先且 Catalog 不参与。状态只允许 `available` 与 `unavailable`。`available` 必须包含 `GenerationCostEstimate`、不得有 unavailable reason，并且 Policy version 与 UTC reference string 必须和 estimate 完全一致；`unavailable` 必须没有 estimate，并保存稳定非空 reason。`USAGE_UNAVAILABLE`、`CACHE_BREAKDOWN_UNAVAILABLE`、`POLICY_NOT_EFFECTIVE` 和 `POLICY_NOT_APPLICABLE` 都是正常的可审计 unavailable 状态，不会把已验证 AI generation 标记为失败。Usage/Cache 不可用时仍已选择具体 Policy，因此记录其 version；Catalog 尚未选择出任何 Policy 的 not-effective/not-applicable 情况使用稳定 `pricing_policy_version="unselected"`，不把无关 provider/model 的 Policy 冒充为已选 snapshot。该值只表示本次 Cost Audit 没有选中任何 PricingPolicy snapshot；任何放入 Catalog 或作为 Cost Audit explicit pricing snapshot 提供的真实 Policy 都不得使用 reserved version `"unselected"`。explicit reserved Policy 属于 `INVALID_COST_AUDIT` hard failure，不会生成 `available / unselected`。`INVALID_PRICING_CATALOG`、`INVALID_PRICING_INPUT` 或 unexpected Pricing/Cost exception 不会被伪装成 `unavailable`，而是在 Session 原子提交前 fail closed。
+
+App 只在用户显式 Generate/Regenerate 后捕获一次 `pricing_reference_at`，顺序固定为：构造 Provider、立即捕获本地 timezone-aware UTC timestamp、开始 Provider invocation、获得 validated Output/Usage、构建 Cost Audit、构建 Receipt、最后原子提交 Output + Receipt。这个 timestamp 是应用的 deterministic request-start reference convention；例如请求在 `03:59:59 UTC` 开始并于 `04:00:05 UTC` 完成时，当前 estimator 仍使用 `03:59:59`。它不是 Provider server receive time、response completion time、invoice time 或 Provider 确认的 billing timestamp，因此 Estimated Cost 不能解释为最终扣费。
+
+Cost Audit 的 `to_dict()` 与 Estimate nested object 都显式构造，不使用 `asdict()`。四个 monetary Decimal 字段固定序列化为 exact plain-decimal JSON string，例如 `"0.0004484"`；不转换为 float、不使用科学计数显示、不加货币符号、不 round 或 quantize。币种由 nested estimate 的 `currency="USD"` 表达。相对地，Usage token counts 继续是 JSON integer number。Receipt 只存 `pricing_policy_version` 关联本地 snapshot，不重复保存 source URL 或 `verified_at`。
+
+`Generation Details` expander 展示可读 UTC receipt time、DeepSeek 产品标签、固定 model、分析粒度、Context/Prompt/Output/Receipt versions、三类记录数量、analysis ID 前 12 位、Token Usage，以及 Receipt 内保存的 Estimated total API cost、pricing tier、pricing reference、pricing policy version、cache-hit input cost、cache-miss input cost 和 completion cost。Cost unavailable 时使用中性文案与安全 reason mapping，不显示 generation error。界面固定说明 Estimate 来自 recorded Usage 与 stored Pricing Policy snapshot，并非 Provider final billed amount；不做 display rounding、FX、CNY/RMB、budget enforcement 或 actual billing claim。
+
+Generation Details、nested Cost serialization 和 Receipt JSON 下载准备位于同一窄范围 passive presentation safety boundary 内。这里的 unexpected `Exception` 只在服务器侧按既有 fixed-message logging policy 记录，并向 UI 显示稳定通用文案，不把原始 exception text 写入 UI 或 Session；`KeyboardInterrupt` 与 `SystemExit` 不会被吞。展示失败不会被改写成 generation failure，不覆盖 `ai_error_code` / `ai_error_message`，不清除已验证的 Output/Receipt/signature pair，也不影响 Pipeline、Metrics、Diagnostics 或 Excel。已验证的 AI Output 仍正常展示，只有 Generation Details / Receipt download 降级；普通 rerun 不重建 Receipt、不重算 Cost、不调用或 retry Provider。
+
+`Download AI Receipt` 将 `to_dict()` 显式公开契约序列化为 strict UTF-8 JSON，文件名保持 `crossborder_ops_ai_receipt_<12-char-analysis-id>.json`，不拼接原上传文件名。展示或下载 Receipt 不调用 Provider、不发起 pricing HTTP、不读取 current time、不重建 Receipt，也不改变 `generated_at` 或 `pricing_reference_at`。Receipt 不包含 API key、Prompt、raw Provider response、SDK request ID、原始数据行、具体业务指标值、Evidence、Executive Summary 或模型解释。Receipt JSON 与确定性 Excel 报告独立下载；AI 内容、Receipt、Usage 和 Cost Audit 都不写入 Excel。
 
 ### Excel Download 与 V1 Scope
 
@@ -1284,6 +1508,10 @@ CrossBorder Ops Radar/
 │   ├── insight_prompt.py         # Provider-independent Prompt 与 Output Schema
 │   ├── insight_provider.py       # Provider Protocol、Mock、strict JSON 与统一生成入口
 │   ├── deepseek_provider.py      # DeepSeek OpenAI-compatible real Provider Adapter
+│   ├── insight_receipt.py        # Immutable AI Generation Receipt 与 JSON-safe Contract
+│   ├── insight_pricing.py        # Versioned Pricing Snapshot 与 Decimal Cost Estimate Core
+│   ├── insight_pricing_catalog.py # Immutable Policy collection 与历史 selection
+│   ├── insight_cost_audit.py     # Cost available/unavailable Audit Metadata 与 exact JSON
 │   ├── report.py                # ReportData 与固定四 Sheet 的 Excel bytes 导出
 │   └── pipeline.py              # 顺序编排与结构化 PipelineResult
 └── tests/
@@ -1295,6 +1523,10 @@ CrossBorder Ops Radar/
     ├── test_insight_prompt.py
     ├── test_insight_provider.py
     ├── test_deepseek_provider.py
+    ├── test_insight_receipt.py
+    ├── test_insight_pricing.py
+    ├── test_insight_pricing_catalog.py
+    ├── test_insight_cost_audit.py
     ├── test_pipeline.py
     ├── test_report.py
     ├── test_app.py

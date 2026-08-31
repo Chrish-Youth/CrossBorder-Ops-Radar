@@ -39,6 +39,7 @@ from src.insight_prompt import (
 from src.insight_provider import (
     INVALID_PROVIDER_JSON,
     INVALID_PROVIDER_RESPONSE,
+    INVALID_PROVIDER_USAGE,
     MAX_PROVIDER_RESPONSE_BYTES,
     PROVIDER_ACCOUNT_ERROR,
     PROVIDER_AUTH_FAILED,
@@ -52,6 +53,8 @@ from src.insight_provider import (
     PROVIDER_UNAVAILABLE,
     InsightProvider,
     InsightProviderError,
+    ProviderGeneration,
+    ProviderUsage,
     generate_insight,
 )
 from src.insights import InsightContext, build_insight_context
@@ -137,6 +140,7 @@ def completion(
     content: object,
     *,
     finish_reason: object = "stop",
+    usage: object = None,
 ) -> SimpleNamespace:
     return SimpleNamespace(
         choices=[
@@ -144,7 +148,8 @@ def completion(
                 finish_reason=finish_reason,
                 message=SimpleNamespace(content=content),
             )
-        ]
+        ],
+        usage=usage,
     )
 
 
@@ -357,7 +362,7 @@ def test_request_shape_is_exact_and_prompt_messages_are_unchanged(
 
     result = provider.generate(prompt(system_prompt=system, user_prompt=user))
 
-    assert result == ' {"ok":true} '
+    assert result == ProviderGeneration(raw_text=' {"ok":true} ', usage=None)
     assert client.completions.call_count == 1
     assert client.completions.calls == [
         {
@@ -404,9 +409,14 @@ def test_real_sdk_serializes_request_contract_through_offline_transport(
                     }
                 ],
                 "usage": {
-                    "prompt_tokens": 1,
-                    "completion_tokens": 1,
-                    "total_tokens": 2,
+                    "prompt_tokens": 100,
+                    "completion_tokens": 20,
+                    "total_tokens": 120,
+                    "prompt_cache_hit_tokens": 60,
+                    "prompt_cache_miss_tokens": 40,
+                    "completion_tokens_details": {
+                        "reasoning_tokens": 7,
+                    },
                 },
             },
         )
@@ -421,11 +431,19 @@ def test_real_sdk_serializes_request_contract_through_offline_transport(
     )
 
     try:
-        raw = provider.generate(request_prompt)
+        generation = provider.generate(request_prompt)
     finally:
         provider._client.close()  # type: ignore[attr-defined]
 
-    assert raw == '  {"ok":true}  '
+    assert generation.raw_text == '  {"ok":true}  '
+    assert generation.usage == ProviderUsage(
+        prompt_tokens=100,
+        completion_tokens=20,
+        total_tokens=120,
+        prompt_cache_hit_tokens=60,
+        prompt_cache_miss_tokens=40,
+        reasoning_tokens=7,
+    )
     assert factory.call_count == 1
     assert factory.calls == [
         {
@@ -450,6 +468,91 @@ def test_real_sdk_serializes_request_contract_through_offline_transport(
         "stream": False,
         "thinking": {"type": "disabled"},
     }
+
+
+def test_missing_sdk_usage_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, _, client = install_fake(
+        monkeypatch,
+        completion('{"ok":true}', usage=None),
+    )
+
+    generation = provider.generate(prompt())
+
+    assert generation == ProviderGeneration(raw_text='{"ok":true}', usage=None)
+    assert client.completions.call_count == 1
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        SimpleNamespace(
+            prompt_tokens=True,
+            completion_tokens=20,
+            total_tokens=21,
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=-1,
+            total_tokens=99,
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=999,
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            prompt_cache_hit_tokens=60,
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            prompt_cache_hit_tokens=60,
+            prompt_cache_miss_tokens=50,
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=21),
+        ),
+        SimpleNamespace(
+            prompt_tokens=100,
+            completion_tokens=20,
+            total_tokens=120,
+            completion_tokens_details=SimpleNamespace(reasoning_tokens=True),
+        ),
+    ],
+)
+def test_present_malformed_usage_is_rejected_without_content_leakage(
+    monkeypatch: pytest.MonkeyPatch,
+    usage: object,
+) -> None:
+    secret_content = "SECRET_PROVIDER_CONTENT"
+    provider, _, client = install_fake(
+        monkeypatch,
+        completion(secret_content, usage=usage),
+    )
+
+    with pytest.raises(InsightProviderError) as caught:
+        provider.generate(prompt())
+
+    assert caught.value.code == INVALID_PROVIDER_USAGE
+    assert caught.value.message == "Provider 返回的使用量信息无效。"
+    assert secret_content not in str(caught.value)
+    assert secret_content not in repr(caught.value)
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert client.completions.call_count == 1
 
 
 @pytest.mark.parametrize(
@@ -502,8 +605,8 @@ def test_client_is_reused_across_generate_calls(
         completion('{"ok":true}'),
     )
 
-    assert provider.generate(prompt()) == '{"ok":true}'
-    assert provider.generate(prompt(user_prompt="SECOND")) == '{"ok":true}'
+    assert provider.generate(prompt()).raw_text == '{"ok":true}'
+    assert provider.generate(prompt(user_prompt="SECOND")).raw_text == '{"ok":true}'
     assert factory.call_count == 1
     assert client.completions.call_count == 2
 
@@ -525,7 +628,7 @@ def test_multiple_choices_use_first_choice_only(
     )
     provider, _, client = install_fake(monkeypatch, response)
 
-    assert provider.generate(prompt()) == "FIRST"
+    assert provider.generate(prompt()).raw_text == "FIRST"
     assert client.completions.call_count == 1
 
 
@@ -537,7 +640,7 @@ def test_client_reuse_recovers_after_mapped_failure(
         completion("FIRST"),
     )
 
-    assert provider.generate(prompt()) == "FIRST"
+    assert provider.generate(prompt()).raw_text == "FIRST"
     client.completions.outcome = APITimeoutError(
         request=httpx2.Request(
             "POST",
@@ -547,7 +650,7 @@ def test_client_reuse_recovers_after_mapped_failure(
     with pytest.raises(InsightProviderError) as caught:
         provider.generate(prompt())
     client.completions.outcome = completion("THIRD")
-    assert provider.generate(prompt()) == "THIRD"
+    assert provider.generate(prompt()).raw_text == "THIRD"
 
     assert caught.value.code == PROVIDER_TIMEOUT
     assert factory.call_count == 1
@@ -564,8 +667,8 @@ def test_provider_instances_have_independent_clients(
     first = DeepSeekInsightProvider()
     second = DeepSeekInsightProvider()
 
-    assert first.generate(prompt()) == "OK"
-    assert second.generate(prompt()) == "OK"
+    assert first.generate(prompt()).raw_text == "OK"
+    assert second.generate(prompt()).raw_text == "OK"
     assert factory.call_count == 2
     assert len(factory.clients) == 2
     assert factory.clients[0] is not factory.clients[1]
@@ -744,7 +847,7 @@ def test_adapter_returns_nonempty_raw_content_without_parsing_or_stripping(
     raw = "\n  not json  \t"
     provider, _, _ = install_fake(monkeypatch, completion(raw))
 
-    assert provider.generate(prompt()) == raw
+    assert provider.generate(prompt()).raw_text == raw
 
 
 def test_normal_string_subclass_is_returned_unchanged(
@@ -756,7 +859,7 @@ def test_normal_string_subclass_is_returned_unchanged(
     raw = NormalStr("\n  {\"ok\":true}  \t")
     provider, _, _ = install_fake(monkeypatch, completion(raw))
 
-    assert provider.generate(prompt()) is raw
+    assert provider.generate(prompt()).raw_text is raw
 
 
 @pytest.mark.parametrize("exception_type", [RuntimeError, TypeError])

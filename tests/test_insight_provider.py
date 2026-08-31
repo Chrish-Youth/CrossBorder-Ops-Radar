@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import FrozenInstanceError
 import json
 from math import isfinite
 from pathlib import Path
@@ -33,13 +34,18 @@ from src.insight_provider import (
     INVALID_PROVIDER,
     INVALID_PROVIDER_JSON,
     INVALID_PROVIDER_RESPONSE,
+    INVALID_PROVIDER_USAGE,
     MAX_PROVIDER_RESPONSE_BYTES,
     PROVIDER_FAILURE,
     PROVIDER_RESPONSE_TOO_LARGE,
     InsightProvider,
+    InsightGenerationResult,
     InsightProviderError,
     MockInsightProvider,
+    ProviderGeneration,
+    ProviderUsage,
     generate_insight,
+    generate_insight_with_metadata,
 )
 from src.insights import (
     INSIGHT_CONTEXT_LIMITATIONS,
@@ -228,6 +234,250 @@ def test_sample_mock_provider_e2e_and_public_contract(
     assert provider.last_prompt == expected_prompt  # type: ignore[attr-defined]
     assert provider.response == response  # type: ignore[attr-defined]
     assert sample_context.to_dict() == context_before
+
+
+def test_metadata_api_returns_validated_output_and_exact_usage(
+    sample_context: InsightContext,
+) -> None:
+    payload = valid_payload(sample_context)
+    usage = ProviderUsage(
+        prompt_tokens=100,
+        completion_tokens=20,
+        total_tokens=120,
+        prompt_cache_hit_tokens=60,
+        prompt_cache_miss_tokens=40,
+        reasoning_tokens=0,
+    )
+    provider = MockInsightProvider(raw_json(payload), usage=usage)
+
+    result = generate_insight_with_metadata(sample_context, provider=provider)
+
+    assert isinstance(result, InsightGenerationResult)
+    assert result.output.to_dict() == payload
+    assert result.usage is usage
+    assert provider.call_count == 1
+    assert not hasattr(provider, "last_usage")
+
+
+def test_metadata_api_allows_missing_usage(
+    sample_context: InsightContext,
+) -> None:
+    result = generate_insight_with_metadata(
+        sample_context,
+        provider=MockInsightProvider(raw_json(valid_payload(sample_context))),
+    )
+
+    assert isinstance(result.output, InsightOutput)
+    assert result.usage is None
+
+
+def test_legacy_and_metadata_apis_return_equivalent_outputs(
+    sample_context: InsightContext,
+) -> None:
+    response = raw_json(valid_payload(sample_context))
+
+    legacy = generate_insight(
+        sample_context,
+        provider=MockInsightProvider(response),
+    )
+    metadata = generate_insight_with_metadata(
+        sample_context,
+        provider=MockInsightProvider(response),
+    )
+
+    assert isinstance(legacy, InsightOutput)
+    assert isinstance(metadata, InsightGenerationResult)
+    assert legacy.to_dict() == metadata.output.to_dict()
+
+
+def test_mock_provider_returns_explicit_generation_envelope(
+    sample_context: InsightContext,
+) -> None:
+    usage = ProviderUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0)
+    provider = MockInsightProvider("{}", usage=usage)
+
+    generation = provider.generate(build_insight_prompt(sample_context))
+
+    assert generation == ProviderGeneration(raw_text="{}", usage=usage)
+    assert provider.call_count == 1
+    assert provider.last_prompt == build_insight_prompt(sample_context)
+
+
+def test_bare_string_from_legacy_provider_is_rejected(
+    sample_context: InsightContext,
+) -> None:
+    response = raw_json(valid_payload(sample_context))
+
+    class LegacyProvider:
+        def generate(self, prompt: object) -> str:
+            return response
+
+    with pytest.raises(InsightProviderError) as caught:
+        generate_insight_with_metadata(
+            sample_context,
+            provider=LegacyProvider(),  # type: ignore[arg-type]
+        )
+
+    assert caught.value.code == INVALID_PROVIDER_RESPONSE
+
+
+@pytest.mark.parametrize("value", [None, {}, [], b"{}", 1, True])
+def test_invalid_provider_generation_types_are_rejected(
+    sample_context: InsightContext,
+    value: object,
+) -> None:
+    class InvalidProvider:
+        def generate(self, prompt: object) -> object:
+            return value
+
+    with pytest.raises(InsightProviderError) as caught:
+        generate_insight_with_metadata(
+            sample_context,
+            provider=InvalidProvider(),  # type: ignore[arg-type]
+        )
+
+    assert caught.value.code == INVALID_PROVIDER_RESPONSE
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"prompt_tokens": -1, "total_tokens": 19},
+        {"completion_tokens": -1, "total_tokens": 99},
+        {"total_tokens": -1},
+        {"prompt_tokens": True},
+        {"completion_tokens": True},
+        {"total_tokens": True},
+        {"total_tokens": 999},
+        {"prompt_cache_hit_tokens": 60},
+        {"prompt_cache_miss_tokens": 40},
+        {
+            "prompt_cache_hit_tokens": 60,
+            "prompt_cache_miss_tokens": 50,
+        },
+        {
+            "prompt_cache_hit_tokens": -1,
+            "prompt_cache_miss_tokens": 101,
+        },
+        {
+            "prompt_cache_hit_tokens": True,
+            "prompt_cache_miss_tokens": 99,
+        },
+        {"reasoning_tokens": -1},
+        {"reasoning_tokens": True},
+        {"reasoning_tokens": 21},
+    ],
+)
+def test_provider_usage_rejects_invalid_or_inconsistent_values(
+    overrides: dict[str, object],
+) -> None:
+    values: dict[str, object] = {
+        "prompt_tokens": 100,
+        "completion_tokens": 20,
+        "total_tokens": 120,
+        "prompt_cache_hit_tokens": None,
+        "prompt_cache_miss_tokens": None,
+        "reasoning_tokens": None,
+    }
+    values.update(overrides)
+
+    with pytest.raises(InsightProviderError) as caught:
+        ProviderUsage(**values)  # type: ignore[arg-type]
+
+    assert caught.value.code == INVALID_PROVIDER_USAGE
+
+
+def test_zero_and_unbounded_python_integer_usage_are_valid() -> None:
+    zero = ProviderUsage(
+        prompt_tokens=0,
+        completion_tokens=0,
+        total_tokens=0,
+        prompt_cache_hit_tokens=0,
+        prompt_cache_miss_tokens=0,
+        reasoning_tokens=0,
+    )
+    huge = 10**100
+    large = ProviderUsage(
+        prompt_tokens=huge,
+        completion_tokens=huge,
+        total_tokens=huge * 2,
+    )
+
+    assert zero.total_tokens == 0
+    assert large.total_tokens == huge * 2
+
+
+def test_generation_contracts_are_frozen() -> None:
+    usage = ProviderUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+    generation = ProviderGeneration(raw_text="{}", usage=usage)
+    result = InsightGenerationResult(
+        output=InsightOutput(
+            version="1",
+            executive_summary="summary",
+            priority_insights=(),
+            overall_limitations=(),
+        ),
+        usage=usage,
+    )
+
+    with pytest.raises(FrozenInstanceError):
+        usage.total_tokens = 3  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        generation.raw_text = "changed"  # type: ignore[misc]
+    with pytest.raises(FrozenInstanceError):
+        result.usage = None  # type: ignore[misc]
+
+
+def test_valid_usage_does_not_bypass_invalid_json(
+    sample_context: InsightContext,
+) -> None:
+    usage = ProviderUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+    with pytest.raises(InsightProviderError) as caught:
+        generate_insight_with_metadata(
+            sample_context,
+            provider=MockInsightProvider("{", usage=usage),
+        )
+
+    assert caught.value.code == INVALID_PROVIDER_JSON
+
+
+def test_valid_usage_does_not_bypass_output_validation(
+    sample_context: InsightContext,
+) -> None:
+    payload = valid_payload(sample_context)
+    payload["priority_insights"][0]["evidence_codes"] = ["FAKE_CODE"]  # type: ignore[index]
+    usage = ProviderUsage(prompt_tokens=1, completion_tokens=1, total_tokens=2)
+
+    with pytest.raises(InsightOutputError) as caught:
+        generate_insight_with_metadata(
+            sample_context,
+            provider=MockInsightProvider(raw_json(payload), usage=usage),
+        )
+
+    assert caught.value.code == INVALID_INSIGHT_OUTPUT
+
+
+def test_usage_metadata_is_outside_raw_and_canonical_byte_limits(
+    sample_context: InsightContext,
+) -> None:
+    huge = 10**100
+    usage = ProviderUsage(
+        prompt_tokens=huge,
+        completion_tokens=huge,
+        total_tokens=huge * 2,
+    )
+
+    result = generate_insight_with_metadata(
+        sample_context,
+        provider=MockInsightProvider(
+            raw_json(valid_payload(sample_context)),
+            usage=usage,
+        ),
+    )
+
+    assert result.usage is usage
+    assert isinstance(result.output, InsightOutput)
 
 
 @pytest.mark.parametrize("formatting", ["compact", "pretty", "whitespace", "reordered"])

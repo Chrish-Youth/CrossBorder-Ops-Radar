@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 import os
 from typing import Any
 
@@ -18,6 +19,7 @@ from openai import (
 from src.insight_prompt import InsightPrompt
 from src.insight_provider import (
     INVALID_PROVIDER_RESPONSE,
+    INVALID_PROVIDER_USAGE,
     PROVIDER_ACCOUNT_ERROR,
     PROVIDER_AUTH_FAILED,
     PROVIDER_CONFIGURATION_ERROR,
@@ -27,6 +29,8 @@ from src.insight_provider import (
     PROVIDER_REQUEST_REJECTED,
     PROVIDER_TIMEOUT,
     PROVIDER_UNAVAILABLE,
+    ProviderGeneration,
+    ProviderUsage,
     InsightProviderError,
 )
 
@@ -47,7 +51,10 @@ _ERROR_MESSAGES = {
     PROVIDER_REQUEST_REJECTED: "Provider 拒绝了请求。",
     PROVIDER_UNAVAILABLE: "Provider 当前不可用。",
     PROVIDER_FAILURE: "Provider 调用失败。",
+    INVALID_PROVIDER_USAGE: "Provider 返回的使用量信息无效。",
 }
+
+_MISSING = object()
 
 
 def _provider_error(code: str) -> InsightProviderError:
@@ -127,6 +134,76 @@ def _invalid_response(message: str) -> InsightProviderError:
     return InsightProviderError(INVALID_PROVIDER_RESPONSE, message)
 
 
+def _invalid_usage() -> InsightProviderError:
+    return InsightProviderError(
+        INVALID_PROVIDER_USAGE,
+        _ERROR_MESSAGES[INVALID_PROVIDER_USAGE],
+    )
+
+
+def _sdk_field(source: object, field_name: str) -> object:
+    """Read one typed SDK field, including Pydantic-preserved extensions."""
+
+    if isinstance(source, Mapping):
+        return source.get(field_name, _MISSING)
+    try:
+        direct = getattr(source, field_name, _MISSING)
+    except Exception:
+        raise _invalid_usage() from None
+    if direct is not _MISSING:
+        return direct
+    try:
+        model_extra = getattr(source, "model_extra", _MISSING)
+    except Exception:
+        raise _invalid_usage() from None
+    if isinstance(model_extra, Mapping):
+        return model_extra.get(field_name, _MISSING)
+    if model_extra is not _MISSING and model_extra is not None:
+        raise _invalid_usage() from None
+    return _MISSING
+
+
+def _response_usage(response: object) -> ProviderUsage | None:
+    try:
+        usage = getattr(response, "usage", None)
+        if usage is None:
+            return None
+        prompt_tokens = _sdk_field(usage, "prompt_tokens")
+        completion_tokens = _sdk_field(usage, "completion_tokens")
+        total_tokens = _sdk_field(usage, "total_tokens")
+        cache_hit = _sdk_field(usage, "prompt_cache_hit_tokens")
+        cache_miss = _sdk_field(usage, "prompt_cache_miss_tokens")
+        details = _sdk_field(usage, "completion_tokens_details")
+        reasoning_tokens = (
+            _MISSING
+            if details is _MISSING or details is None
+            else _sdk_field(details, "reasoning_tokens")
+        )
+        normalized_usage = ProviderUsage(
+            prompt_tokens=prompt_tokens,  # type: ignore[arg-type]
+            completion_tokens=completion_tokens,  # type: ignore[arg-type]
+            total_tokens=total_tokens,  # type: ignore[arg-type]
+            prompt_cache_hit_tokens=(
+                None if cache_hit is _MISSING else cache_hit  # type: ignore[arg-type]
+            ),
+            prompt_cache_miss_tokens=(
+                None if cache_miss is _MISSING else cache_miss  # type: ignore[arg-type]
+            ),
+            reasoning_tokens=(
+                None if reasoning_tokens is _MISSING else reasoning_tokens  # type: ignore[arg-type]
+            ),
+        )
+    except Exception:
+        error = _invalid_usage()
+    else:
+        error = None
+    if error is not None:
+        # Raise after leaving the SDK/domain exception handler so malformed
+        # usage objects and their values are not retained on the public error.
+        raise error from None
+    return normalized_usage
+
+
 def _response_content(response: object) -> str:
     try:
         choice = response.choices[0]  # type: ignore[attr-defined]
@@ -187,10 +264,12 @@ class DeepSeekInsightProvider:
             raise error from None
         self._client = client
 
-    def generate(self, prompt: InsightPrompt) -> str:
-        """Return one unmodified, normally completed response content string."""
+    def generate(self, prompt: InsightPrompt) -> ProviderGeneration:
+        """Return content and normalized usage from one completed response."""
 
         response, error = _completion_request(self._client, prompt)
         if error is not None:
             raise error from None
-        return _response_content(response)
+        content = _response_content(response)
+        usage = _response_usage(response)
+        return ProviderGeneration(raw_text=content, usage=usage)
