@@ -34,6 +34,7 @@ from src.insight_provider import (
     InsightProviderError,
 )
 
+DEEPSEEK_PROVIDER_NAME = "deepseek"
 DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_TIMEOUT_SECONDS = 60.0
@@ -263,6 +264,18 @@ class DeepSeekInsightProvider:
         if error is not None:
             raise error from None
         self._client = client
+
+    @property
+    def provider_name(self) -> str:
+        """Return the canonical provider identity used for audit provenance."""
+
+        return DEEPSEEK_PROVIDER_NAME
+
+    @property
+    def model(self) -> str:
+        """Return the canonical model identity used by the request adapter."""
+
+        return DEEPSEEK_MODEL
 
     def generate(self, prompt: InsightPrompt) -> ProviderGeneration:
         """Return content and normalized usage from one completed response."""

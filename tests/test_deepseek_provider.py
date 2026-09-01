@@ -23,6 +23,7 @@ import src.insight_provider as generic_provider_module
 from src.deepseek_provider import (
     DEEPSEEK_BASE_URL,
     DEEPSEEK_MODEL,
+    DEEPSEEK_PROVIDER_NAME,
     DEFAULT_DEEPSEEK_MAX_TOKENS,
     DEFAULT_DEEPSEEK_TIMEOUT_SECONDS,
     DeepSeekInsightProvider,
@@ -348,6 +349,22 @@ def test_provider_structurally_satisfies_protocol(
 
     assert typed_provider is provider
     assert callable(typed_provider.generate)
+
+
+def test_provider_exposes_canonical_audit_identity_bound_to_request_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider, _, client = install_fake(
+        monkeypatch,
+        completion('{"ok":true}'),
+    )
+
+    assert provider.provider_name == DEEPSEEK_PROVIDER_NAME == "deepseek"
+    assert provider.model == DEEPSEEK_MODEL == "deepseek-v4-flash"
+
+    provider.generate(prompt())
+
+    assert client.completions.calls[0]["model"] == provider.model
 
 
 def test_request_shape_is_exact_and_prompt_messages_are_unchanged(
