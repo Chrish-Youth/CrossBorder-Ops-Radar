@@ -2069,13 +2069,15 @@ def test_executor_has_delay_but_no_network_app_or_receipt_integration() -> None:
     assert "openai" not in imports
 
 
-def test_existing_streamlit_app_does_not_import_or_call_retry_executor() -> None:
+def test_streamlit_app_routes_generation_through_retry_executor_only() -> None:
     app_source = (Path(__file__).parents[1] / "app.py").read_text(
         encoding="utf-8"
     )
 
-    assert "insight_retry_execution" not in app_source
-    assert "execute_insight_generation_with_retry" not in app_source
+    assert "from src.insight_retry_execution import" in app_source
+    assert "execute_insight_generation_with_retry(" in app_source
+    assert "generate_insight_with_metadata(" not in app_source
+    assert "build_cost_audit_metadata(" not in app_source
 
 
 def test_default_policy_budget_remains_two() -> None:

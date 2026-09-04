@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 import hashlib
+import hmac
 import json
 import logging
 from pathlib import Path
@@ -16,24 +17,24 @@ import streamlit as st
 
 from src.deepseek_provider import DEEPSEEK_MODEL, DeepSeekInsightProvider
 from src.diagnostics import DiagnosticsError
+from src.insight_attempt_audit import FAILED, SUCCEEDED
 from src.insight_cost_audit import (
     AVAILABLE,
     UNAVAILABLE,
-    CostAuditError,
     CostAuditMetadata,
-    build_cost_audit_metadata,
+)
+from src.insight_logical_generation_cost import (
+    FULLY_ESTIMATED,
+    UNKNOWN_TOTAL,
+    UNAVAILABLE as LOGICAL_COST_UNAVAILABLE,
+    LogicalGenerationCostError,
+    LogicalGenerationCostSummary,
 )
 from src.insight_pricing import (
     CACHE_BREAKDOWN_UNAVAILABLE,
-    INVALID_PRICING_INPUT,
     POLICY_NOT_APPLICABLE,
     POLICY_NOT_EFFECTIVE,
     USAGE_UNAVAILABLE,
-    PricingError,
-)
-from src.insight_pricing_catalog import (
-    INVALID_PRICING_CATALOG,
-    PricingCatalogError,
 )
 from src.insight_prompt import (
     INSIGHT_OUTPUT_VERSION,
@@ -42,17 +43,18 @@ from src.insight_prompt import (
     InsightOutputError,
     InsightPromptError,
 )
-from src.insight_provider import (
-    InsightGenerationResult,
-    InsightProviderError,
-    generate_insight_with_metadata,
+from src.insight_provider import InsightProviderError
+from src.insight_receipt import DEEPSEEK_PROVIDER_NAME
+from src.insight_receipt_v4 import (
+    INSIGHT_RECEIPT_V4_VERSION,
+    InsightGenerationReceiptV4,
+    InsightReceiptV4Error,
+    build_insight_receipt_v4,
 )
-from src.insight_receipt import (
-    DEEPSEEK_PROVIDER_NAME,
-    INSIGHT_RECEIPT_VERSION,
-    InsightGenerationReceipt,
-    InsightReceiptError,
-    build_insight_generation_receipt,
+from src.insight_retry_execution import (
+    RetryExecutionError,
+    RetryExecutionResult,
+    execute_insight_generation_with_retry,
 )
 from src.insights import (
     INSIGHT_CONTEXT_VERSION,
@@ -81,6 +83,7 @@ MAX_DOWNLOAD_FILENAME_BYTES = 180
 RECEIPT_DOWNLOAD_MIME = "application/json"
 RECEIPT_DOWNLOAD_PREFIX = "crossborder_ops_ai_receipt_"
 RECEIPT_DOWNLOAD_SUFFIX = ".json"
+AI_SUCCESS_BINDING_VERSION = "1"
 
 _PROVIDER_DISPLAY_NAMES: dict[str, str] = {
     "deepseek": "DeepSeek",
@@ -114,10 +117,15 @@ _ANALYSIS_SESSION_DEFAULTS: dict[str, Any] = {
 _AI_SESSION_DEFAULTS: dict[str, Any] = {
     "ai_output": None,
     "ai_receipt": None,
-    "ai_error_code": None,
-    "ai_error_message": None,
     "ai_signature": None,
+    "ai_success_binding": None,
+    "ai_failure": None,
 }
+
+_LEGACY_AI_ERROR_KEYS: tuple[str, ...] = (
+    "ai_error_code",
+    "ai_error_message",
+)
 
 _SESSION_DEFAULTS: dict[str, Any] = {
     **_ANALYSIS_SESSION_DEFAULTS,
@@ -175,17 +183,14 @@ _AI_ERROR_MESSAGES: dict[str, str] = {
     "PROMPT_TOO_LARGE": (
         "The current analysis is too large for AI interpretation."
     ),
-    "INVALID_RECEIPT_INPUT": (
+    "INVALID_RECEIPT_V4_INPUT": (
         "AI insights could not be saved with valid generation details."
     ),
-    "INVALID_COST_AUDIT": (
-        "AI cost details could not be safely prepared for this generation."
+    "INVALID_LOGICAL_GENERATION_COST": (
+        "AI cost details could not be safely recorded for this generation."
     ),
-    INVALID_PRICING_INPUT: (
-        "AI cost details could not be safely prepared for this generation."
-    ),
-    INVALID_PRICING_CATALOG: (
-        "AI cost details could not be safely prepared for this generation."
+    "INVALID_RETRY_EXECUTION": (
+        "AI retry execution could not be completed safely."
     ),
 }
 
@@ -197,6 +202,25 @@ _AI_UNEXPECTED_ERROR_MESSAGE = (
 )
 _AI_AUDIT_PRESENTATION_ERROR_MESSAGE = (
     "AI generation details are temporarily unavailable."
+)
+
+_POST_EXECUTION_AI_FAILURE_CODES: frozenset[str] = frozenset(
+    {
+        "INVALID_RECEIPT_V4_INPUT",
+        "INVALID_LOGICAL_GENERATION_COST",
+        "UNEXPECTED_AI_ERROR",
+    }
+)
+
+_AI_LOG_STAGES: frozenset[str] = frozenset(
+    {
+        "context_build",
+        "provider_setup",
+        "retry_execution",
+        "receipt_build",
+        "success_binding",
+        "render",
+    }
 )
 
 _COST_UNAVAILABLE_MESSAGES: dict[str, str] = {
@@ -307,7 +331,17 @@ class AiGenerationArtifacts:
     """One validated AI output and its matching immutable receipt."""
 
     output: InsightOutput
-    receipt: InsightGenerationReceipt
+    receipt: InsightGenerationReceiptV4
+    success_binding: str
+
+
+@dataclass(frozen=True)
+class AiGenerationFailure:
+    """Failure provenance for one explicit AI generation operation."""
+
+    signature: str
+    error_code: str
+    execution_result: RetryExecutionResult | None
 
 
 def resolve_group_by(label: str) -> list[str] | None:
@@ -357,7 +391,40 @@ def build_ai_signature(analysis_signature: str) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def build_receipt_download_filename(receipt: InsightGenerationReceipt) -> str:
+def build_ai_success_binding(
+    output: InsightOutput,
+    receipt: InsightGenerationReceiptV4,
+    ai_signature: str,
+) -> str:
+    """Bind one App-local success snapshot without exporting its payload."""
+
+    if not isinstance(output, InsightOutput):
+        raise TypeError("output must be InsightOutput")
+    if not isinstance(receipt, InsightGenerationReceiptV4):
+        raise TypeError("receipt must be InsightGenerationReceiptV4")
+    if (
+        not isinstance(ai_signature, str)
+        or re.fullmatch(r"[0-9a-f]{64}", ai_signature) is None
+    ):
+        raise ValueError("ai_signature must be a lowercase SHA-256 digest")
+    canonical = json.dumps(
+        {
+            "binding_version": AI_SUCCESS_BINDING_VERSION,
+            "ai_signature": ai_signature,
+            "output": output.to_dict(),
+            "receipt": receipt.to_dict(),
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def build_receipt_download_filename(
+    receipt: InsightGenerationReceiptV4,
+) -> str:
     """Return a short, path-safe filename derived only from analysis identity."""
 
     safe_id = re.sub(r"[^A-Za-z0-9]", "", receipt.analysis_signature)[:12]
@@ -366,11 +433,11 @@ def build_receipt_download_filename(receipt: InsightGenerationReceipt) -> str:
     return f"{RECEIPT_DOWNLOAD_PREFIX}{safe_id}{RECEIPT_DOWNLOAD_SUFFIX}"
 
 
-def build_receipt_json_bytes(receipt: InsightGenerationReceipt) -> bytes:
+def build_receipt_json_bytes(receipt: InsightGenerationReceiptV4) -> bytes:
     """Serialize only the explicit public Receipt contract as UTF-8 JSON."""
 
-    if not isinstance(receipt, InsightGenerationReceipt):
-        raise TypeError("receipt must be InsightGenerationReceipt")
+    if not isinstance(receipt, InsightGenerationReceiptV4):
+        raise TypeError("receipt must be InsightGenerationReceiptV4")
     return json.dumps(
         receipt.to_dict(),
         ensure_ascii=False,
@@ -559,6 +626,9 @@ def _initialize_session_state() -> None:
     for key, value in _SESSION_DEFAULTS.items():
         if key not in st.session_state:
             st.session_state[key] = value
+    for key in _LEGACY_AI_ERROR_KEYS:
+        if key in st.session_state:
+            del st.session_state[key]
 
 
 def _clear_analysis_state() -> None:
@@ -566,9 +636,26 @@ def _clear_analysis_state() -> None:
         st.session_state[key] = value
 
 
+def _clear_ai_success_state() -> None:
+    for key in (
+        "ai_output",
+        "ai_receipt",
+        "ai_signature",
+        "ai_success_binding",
+    ):
+        st.session_state[key] = None
+
+
 def _clear_ai_state() -> None:
-    for key, value in _AI_SESSION_DEFAULTS.items():
-        st.session_state[key] = value
+    _clear_ai_success_state()
+    st.session_state.ai_failure = None
+    for key in _LEGACY_AI_ERROR_KEYS:
+        if key in st.session_state:
+            del st.session_state[key]
+
+
+def _clear_ai_failure() -> None:
+    st.session_state.ai_failure = None
 
 
 def _sync_analysis_signature(current_signature: str | None) -> None:
@@ -584,52 +671,70 @@ def _ai_error_message(code: str) -> str:
     return _AI_ERROR_MESSAGES.get(code, _AI_UNEXPECTED_ERROR_MESSAGE)
 
 
-def _store_ai_error(code: str, *, signature: str) -> None:
-    st.session_state.ai_error_code = code
-    st.session_state.ai_error_message = _ai_error_message(code)
-    st.session_state.ai_signature = signature
+def _log_unexpected_ai_error(stage: str, error: Exception) -> None:
+    """Log only fixed AI failure metadata, never exception content/traceback."""
+
+    safe_stage = stage if stage in _AI_LOG_STAGES else "unknown"
+    logger.error(
+        "Unexpected AI operation failure at stage=%s; exception_type=%s",
+        safe_stage,
+        type(error).__name__,
+    )
+
+
+def _store_ai_failure(
+    code: str,
+    *,
+    signature: str,
+    execution_result: RetryExecutionResult | None,
+) -> None:
+    st.session_state.ai_failure = AiGenerationFailure(
+        signature=signature,
+        error_code=code,
+        execution_result=execution_result,
+    )
+
+
+def _is_valid_ai_failure(value: object, *, signature: str) -> bool:
+    """Validate an App-local failure across Streamlit script reruns."""
+
+    if type(value).__name__ != AiGenerationFailure.__name__:
+        return False
+    failure_fields = getattr(type(value), "__dataclass_fields__", None)
+    if not isinstance(failure_fields, dict) or set(failure_fields) != {
+        "signature",
+        "error_code",
+        "execution_result",
+    }:
+        return False
+    try:
+        failure_signature = value.signature  # type: ignore[attr-defined]
+        error_code = value.error_code  # type: ignore[attr-defined]
+        execution_result = value.execution_result  # type: ignore[attr-defined]
+    except Exception:
+        return False
+    if failure_signature != signature:
+        return False
+    if (
+        not isinstance(error_code, str)
+        or re.fullmatch(r"[A-Z][A-Z0-9_]*", error_code) is None
+    ):
+        return False
+    if execution_result is None:
+        return True
+    if not isinstance(execution_result, RetryExecutionResult):
+        return False
+    if execution_result.status == FAILED:
+        return execution_result.error_code == error_code
+    if execution_result.status == SUCCEEDED:
+        return error_code in _POST_EXECUTION_AI_FAILURE_CODES
+    return False
 
 
 def _utc_now() -> datetime:
-    """Return the request-start clock value through a private test seam."""
+    """Return the receipt-generation clock through a private test seam."""
 
     return datetime.now(timezone.utc)
-
-
-def _generate_ai_artifacts(
-    result: PipelineResult,
-    *,
-    analysis_signature: str,
-    group_by: list[str] | None,
-) -> AiGenerationArtifacts:
-    """Generate one validated output, then create its matching Receipt."""
-
-    context = build_insight_context(result)
-    provider = DeepSeekInsightProvider()
-    pricing_reference_at = _utc_now()
-    generation = generate_insight_with_metadata(context, provider=provider)
-    if not isinstance(generation, InsightGenerationResult) or not isinstance(
-        generation.output,
-        InsightOutput,
-    ):
-        raise TypeError(
-            "generate_insight_with_metadata() returned an invalid result type"
-        )
-    cost = build_cost_audit_metadata(
-        generation.usage,
-        provider=DEEPSEEK_PROVIDER_NAME,
-        model=DEEPSEEK_MODEL,
-        pricing_reference_at=pricing_reference_at,
-    )
-    receipt = build_insight_generation_receipt(
-        analysis_signature=analysis_signature,
-        group_by=group_by,
-        context=context,
-        output=generation.output,
-        usage=generation.usage,
-        cost=cost,
-    )
-    return AiGenerationArtifacts(output=generation.output, receipt=receipt)
 
 
 def _run_ai_generation(
@@ -639,35 +744,92 @@ def _run_ai_generation(
     analysis_signature: str,
     group_by: list[str] | None,
 ) -> None:
+    execution_result: RetryExecutionResult | None = None
+    stage = "context_build"
     try:
-        artifacts = _generate_ai_artifacts(
-            result,
+        context = build_insight_context(result)
+        stage = "provider_setup"
+        provider = DeepSeekInsightProvider()
+        stage = "retry_execution"
+        candidate = execute_insight_generation_with_retry(
+            context,
+            provider=provider,
+        )
+        if not isinstance(candidate, RetryExecutionResult):
+            raise TypeError(
+                "execute_insight_generation_with_retry() returned an invalid "
+                "result type"
+            )
+        execution_result = candidate
+        if execution_result.status == FAILED:
+            error_code = execution_result.error_code
+            if not isinstance(error_code, str) or not error_code.strip():
+                raise TypeError(
+                    "A failed Retry Execution result requires an error code"
+                )
+            _store_ai_failure(
+                error_code,
+                signature=signature,
+                execution_result=execution_result,
+            )
+            return
+        if execution_result.status != SUCCEEDED:
+            raise TypeError("Retry Execution returned an unknown status")
+        output = execution_result.output
+        if not isinstance(output, InsightOutput):
+            raise TypeError(
+                "A succeeded Retry Execution result requires InsightOutput"
+            )
+        stage = "receipt_build"
+        generated_at = _utc_now().isoformat()
+        receipt = build_insight_receipt_v4(
+            generated_at=generated_at,
             analysis_signature=analysis_signature,
             group_by=group_by,
+            context=context,
+            execution_result=execution_result,
+        )
+        stage = "success_binding"
+        success_binding = build_ai_success_binding(
+            output,
+            receipt,
+            signature,
+        )
+        artifacts = AiGenerationArtifacts(
+            output=output,
+            receipt=receipt,
+            success_binding=success_binding,
         )
     except (
         InsightContextError,
         InsightPromptError,
         InsightProviderError,
         InsightOutputError,
-        CostAuditError,
-        PricingCatalogError,
-        PricingError,
-        InsightReceiptError,
+        RetryExecutionError,
+        InsightReceiptV4Error,
+        LogicalGenerationCostError,
     ) as error:
         code = error.code if isinstance(error.code, str) else "UNEXPECTED_AI_ERROR"
-        _store_ai_error(code, signature=signature)
-    except Exception:
-        logger.exception("Unexpected error during AI insight generation")
-        _store_ai_error("UNEXPECTED_AI_ERROR", signature=signature)
+        _store_ai_failure(
+            code,
+            signature=signature,
+            execution_result=execution_result,
+        )
+    except Exception as error:
+        _log_unexpected_ai_error(stage, error)
+        _store_ai_failure(
+            "UNEXPECTED_AI_ERROR",
+            signature=signature,
+            execution_result=execution_result,
+        )
     else:
         st.session_state.update(
             {
                 "ai_output": artifacts.output,
                 "ai_receipt": artifacts.receipt,
-                "ai_error_code": None,
-                "ai_error_message": None,
                 "ai_signature": signature,
+                "ai_success_binding": artifacts.success_binding,
+                "ai_failure": None,
             }
         )
 
@@ -737,41 +899,83 @@ def _format_cost_amount(value: Any) -> str:
     return format(value, "f")
 
 
-def _render_cost_details(cost: CostAuditMetadata) -> None:
-    """Render only the historical cost audit stored inside the Receipt."""
+def _render_cost_details(
+    cost: CostAuditMetadata,
+    logical_cost: LogicalGenerationCostSummary,
+) -> None:
+    """Render final-attempt and logical-generation cost truth separately."""
 
-    st.markdown("**Estimated Cost**")
+    st.markdown("**Cost Estimate**")
     st.caption(
         f"Pricing reference: {cost.pricing_reference_at} · "
         f"Pricing policy: {cost.pricing_policy_version}"
     )
     if cost.status == UNAVAILABLE:
-        st.caption("Estimated API cost unavailable for this generation.")
+        st.caption("Final successful attempt cost estimate unavailable.")
         reason_message = _COST_UNAVAILABLE_MESSAGES.get(
             cost.unavailable_reason or "",
             "Cost estimate unavailable.",
         )
         st.caption(reason_message)
-        st.caption(_COST_ESTIMATE_DISCLAIMER)
-        return
-    if cost.status != AVAILABLE or cost.estimate is None:
+    elif cost.status == AVAILABLE and cost.estimate is not None:
+        estimate = cost.estimate
+        st.caption(
+            "Final successful attempt estimated API cost (USD): "
+            f"${_format_cost_amount(estimate.total_estimated_cost)}"
+        )
+        st.caption(f"Pricing tier: {estimate.pricing_tier}")
+        st.caption(
+            "Cache-hit input cost: "
+            f"${_format_cost_amount(estimate.prompt_cache_hit_cost)} · "
+            "Cache-miss input cost: "
+            f"${_format_cost_amount(estimate.prompt_cache_miss_cost)} · "
+            "Completion cost: "
+            f"${_format_cost_amount(estimate.completion_cost)}"
+        )
+    else:
         raise ValueError("Invalid Cost Audit presentation state")
 
-    estimate = cost.estimate
-    st.caption(
-        f"Estimated total API cost ({estimate.currency}): "
-        f"${_format_cost_amount(estimate.total_estimated_cost)}"
-    )
-    st.caption(f"Pricing tier: {estimate.pricing_tier}")
-    st.caption(
-        "Cache-hit input cost: "
-        f"${_format_cost_amount(estimate.prompt_cache_hit_cost)} · "
-        "Cache-miss input cost: "
-        f"${_format_cost_amount(estimate.prompt_cache_miss_cost)} · "
-        "Completion cost: "
-        f"${_format_cost_amount(estimate.completion_cost)}"
-    )
+    if logical_cost.status == FULLY_ESTIMATED:
+        amount = logical_cost.estimated_total_cost_usd
+        if amount is None:
+            raise ValueError("Logical-generation total is missing")
+        st.caption(
+            "Logical-generation estimated total (USD): "
+            f"${_format_cost_amount(amount)}"
+        )
+    elif logical_cost.status == LOGICAL_COST_UNAVAILABLE:
+        st.caption(
+            "Logical-generation total estimate unavailable because the final "
+            "successful attempt cost estimate is unavailable."
+        )
+    elif logical_cost.status == UNKNOWN_TOTAL:
+        st.caption(
+            "Logical-generation total spend is unknown because one or more "
+            "prior failed attempts have unknown cost."
+        )
+    else:
+        raise ValueError("Invalid logical-generation cost presentation state")
     st.caption(_COST_ESTIMATE_DISCLAIMER)
+
+
+def _is_valid_ai_success_binding(
+    binding: object,
+    *,
+    output: InsightOutput,
+    receipt: InsightGenerationReceiptV4,
+    ai_signature: str,
+) -> bool:
+    if (
+        not isinstance(binding, str)
+        or re.fullmatch(r"[0-9a-f]{64}", binding) is None
+    ):
+        return False
+    try:
+        expected = build_ai_success_binding(output, receipt, ai_signature)
+    except Exception as error:
+        _log_unexpected_ai_error("success_binding", error)
+        return False
+    return hmac.compare_digest(binding, expected)
 
 
 def _current_ai_pair(
@@ -779,19 +983,26 @@ def _current_ai_pair(
     ai_signature: str,
     analysis_signature: str,
     group_by: list[str] | None,
-) -> tuple[InsightOutput | None, InsightGenerationReceipt | None]:
+) -> tuple[InsightOutput | None, InsightGenerationReceiptV4 | None]:
     output = st.session_state.ai_output
     receipt = st.session_state.ai_receipt
-    if output is None and receipt is None:
+    signature = st.session_state.ai_signature
+    binding = st.session_state.ai_success_binding
+    if (
+        output is None
+        and receipt is None
+        and signature is None
+        and binding is None
+    ):
         return None, None
     expected_group_by = () if group_by is None else tuple(group_by)
     if (
         not isinstance(output, InsightOutput)
-        or not isinstance(receipt, InsightGenerationReceipt)
-        or st.session_state.ai_signature != ai_signature
+        or not isinstance(receipt, InsightGenerationReceiptV4)
+        or signature != ai_signature
         or receipt.analysis_signature != analysis_signature
         or receipt.group_by != expected_group_by
-        or receipt.version != INSIGHT_RECEIPT_VERSION
+        or receipt.version != INSIGHT_RECEIPT_V4_VERSION
         or receipt.context_version != INSIGHT_CONTEXT_VERSION
         or receipt.prompt_version != INSIGHT_PROMPT_VERSION
         or receipt.output_version != INSIGHT_OUTPUT_VERSION
@@ -800,12 +1011,63 @@ def _current_ai_pair(
         or receipt.priority_insight_count != len(output.priority_insights)
         or not isinstance(receipt.cost, CostAuditMetadata)
     ):
-        _clear_ai_state()
+        _clear_ai_success_state()
+        return None, None
+    if not _is_valid_ai_success_binding(
+        binding,
+        output=output,
+        receipt=receipt,
+        ai_signature=signature,
+    ):
+        _clear_ai_success_state()
         return None, None
     return output, receipt
 
 
-def _render_generation_details(receipt: InsightGenerationReceipt) -> None:
+def _render_retry_provenance(
+    source: RetryExecutionResult | InsightGenerationReceiptV4,
+) -> None:
+    attempts = source.attempt_audit.attempts
+    delays = source.delay_audit.records
+    status = source.status if isinstance(source, RetryExecutionResult) else SUCCEEDED
+    st.markdown("**Retry Provenance**")
+    st.caption(
+        f"Completed execution status: {status} · "
+        f"Provider attempts: {len(attempts):,} · "
+        f"Completed retry-delay transitions: {len(delays):,}"
+    )
+    st.caption(
+        f"Retry policy: {source.attempt_audit.retry_policy_version} · "
+        f"Delay policy: {source.delay_audit.policy_version}"
+    )
+    if delays:
+        requested = " · ".join(
+            f"after attempt {record.after_attempt_number}: "
+            f"{record.delay_decision.delay_ms:,} ms requested"
+            for record in delays
+        )
+        st.caption(f"Requested retry delays: {requested}")
+
+
+def _render_failure_details(failure: AiGenerationFailure) -> None:
+    with st.expander("Failed Generation Details"):
+        st.caption(f"Failure code: {failure.error_code}")
+        result = failure.execution_result
+        if result is None:
+            st.caption(
+                "Attempt audit unavailable because no completed Retry Execution "
+                "result was returned."
+            )
+            return
+        _render_retry_provenance(result)
+        if result.status == SUCCEEDED:
+            st.caption(
+                "Provider execution completed successfully, but post-execution "
+                "application processing failed."
+            )
+
+
+def _render_generation_details(receipt: InsightGenerationReceiptV4) -> None:
     with st.expander("Generation Details"):
         st.caption(
             f"Generated at {_format_receipt_time(receipt.generated_at)} · "
@@ -850,7 +1112,8 @@ def _render_generation_details(receipt: InsightGenerationReceipt) -> None:
                 )
             if optional_usage:
                 st.caption(" · ".join(optional_usage))
-        _render_cost_details(receipt.cost)
+        _render_retry_provenance(receipt)
+        _render_cost_details(receipt.cost, receipt.logical_generation_cost)
         st.download_button(
             "Download AI Receipt",
             data=build_receipt_json_bytes(receipt),
@@ -861,14 +1124,14 @@ def _render_generation_details(receipt: InsightGenerationReceipt) -> None:
 
 
 def _render_generation_details_safely(
-    receipt: InsightGenerationReceipt,
+    receipt: InsightGenerationReceiptV4,
 ) -> None:
     """Render passive audit UI without exposing unexpected exception details."""
 
     try:
         _render_generation_details(receipt)
-    except Exception:
-        logger.exception("Unexpected error while rendering AI generation details")
+    except Exception as error:
+        _log_unexpected_ai_error("render", error)
         st.error(_AI_AUDIT_PRESENTATION_ERROR_MESSAGE)
 
 
@@ -883,11 +1146,24 @@ def _render_ai_section(
         return
 
     ai_signature = build_ai_signature(current_signature)
-    has_ai_state = any(
-        st.session_state[key] is not None for key in _AI_SESSION_DEFAULTS
+    has_ai_success_state = any(
+        st.session_state[key] is not None
+        for key in (
+            "ai_output",
+            "ai_receipt",
+            "ai_signature",
+            "ai_success_binding",
+        )
     )
-    if has_ai_state and st.session_state.ai_signature != ai_signature:
-        _clear_ai_state()
+    if has_ai_success_state and st.session_state.ai_signature != ai_signature:
+        _clear_ai_success_state()
+
+    failure = st.session_state.ai_failure
+    if failure is not None and not _is_valid_ai_failure(
+        failure,
+        signature=ai_signature,
+    ):
+        _clear_ai_failure()
 
     current_output, current_receipt = _current_ai_pair(
         ai_signature=ai_signature,
@@ -921,16 +1197,20 @@ def _render_ai_section(
                 analysis_signature=current_signature,
                 group_by=group_by,
             )
-        if st.session_state.ai_error_message is None:
+        if st.session_state.ai_failure is None:
             st.rerun()
 
-    ai_error_message = st.session_state.ai_error_message
+    failure = st.session_state.ai_failure
     current_output, current_receipt = _current_ai_pair(
         ai_signature=ai_signature,
         analysis_signature=current_signature,
         group_by=group_by,
     )
-    if ai_error_message is not None:
+    if failure is not None and _is_valid_ai_failure(
+        failure,
+        signature=ai_signature,
+    ):
+        ai_error_message = _ai_error_message(failure.error_code)
         if current_output is not None:
             st.warning(
                 "AI regeneration failed. Showing the previous successful result. "
@@ -938,6 +1218,7 @@ def _render_ai_section(
             )
         else:
             st.error(ai_error_message)
+        _render_failure_details(failure)
     if current_output is not None:
         _render_ai_output(current_output)
         if current_receipt is not None:

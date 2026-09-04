@@ -545,6 +545,81 @@ def test_512_digit_delay_is_accepted_and_remains_json_integer() -> None:
     json.dumps(payload, ensure_ascii=False, allow_nan=False)
 
 
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "metric_record_count",
+        "diagnostic_signal_count",
+        "priority_insight_count",
+    ],
+)
+def test_512_digit_top_level_count_remains_strict_json_integer(
+    field_name: str,
+) -> None:
+    receipt, _ = build_receipt()
+    accepted = 10**MAX_RECEIPT_V4_INTEGER_DECIMAL_DIGITS - 1
+
+    reconstructed = replace(receipt, **{field_name: accepted})
+    payload = reconstructed.to_dict()
+
+    assert payload[field_name] == accepted
+    assert isinstance(payload[field_name], int)
+    json.dumps(payload, ensure_ascii=False, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "metric_record_count",
+        "diagnostic_signal_count",
+        "priority_insight_count",
+    ],
+)
+def test_513_digit_top_level_count_is_rejected_by_direct_construction(
+    field_name: str,
+) -> None:
+    receipt, _ = build_receipt()
+    values = {
+        item.name: getattr(receipt, item.name)
+        for item in fields(receipt)
+    }
+    values[field_name] = 10**MAX_RECEIPT_V4_INTEGER_DECIMAL_DIGITS
+
+    with pytest.raises(InsightReceiptV4Error) as captured:
+        InsightGenerationReceiptV4(**values)
+
+    assert captured.value.code == INVALID_RECEIPT_V4_INPUT
+    assert captured.value.message == (
+        "Receipt V4 top-level count exceeds the JSON integer boundary."
+    )
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    [
+        "metric_record_count",
+        "diagnostic_signal_count",
+        "priority_insight_count",
+    ],
+)
+def test_extreme_top_level_count_is_rejected_by_replace_without_disclosure(
+    field_name: str,
+) -> None:
+    receipt, _ = build_receipt()
+    original_limit = sys.get_int_max_str_digits()
+    rejected = 10**5000
+
+    with pytest.raises(InsightReceiptV4Error) as captured:
+        replace(receipt, **{field_name: rejected})
+
+    assert captured.value.code == INVALID_RECEIPT_V4_INPUT
+    assert captured.value.message == (
+        "Receipt V4 top-level count exceeds the JSON integer boundary."
+    )
+    assert field_name not in str(captured.value)
+    assert sys.get_int_max_str_digits() == original_limit
+
+
 def test_5001_digit_delay_is_rejected_during_receipt_construction() -> None:
     original_limit = sys.get_int_max_str_digits()
     execution = execution_with_delay(10**5000)
@@ -664,10 +739,11 @@ def test_v4_has_no_asdict_clock_network_pricing_or_output_content() -> None:
     )
 
 
-def test_app_does_not_import_v4_or_retry_execution() -> None:
+def test_app_uses_v4_only_after_retry_execution_succeeds() -> None:
     app_source = (ROOT / "app.py").read_text(encoding="utf-8")
 
-    assert "insight_receipt_v4" not in app_source
-    assert "execute_insight_generation_with_retry" not in app_source
-    assert "ai_receipt_v4" not in app_source
+    assert "from src.insight_receipt_v4 import" in app_source
+    assert "build_insight_receipt_v4(" in app_source
+    assert "execute_insight_generation_with_retry(" in app_source
+    assert "build_insight_generation_receipt(" not in app_source
     assert INSIGHT_RECEIPT_VERSION == "3"

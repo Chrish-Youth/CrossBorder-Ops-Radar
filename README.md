@@ -2,7 +2,7 @@
 
 CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营数据分析 Demo。项目计划接收 CSV/XLSX 日汇总数据，完成数据质量检查、SKU 指标计算、规则化异常诊断，并生成中文运营报表。
 
-核心运营计算与报表链路不依赖任何大模型。确定性分析完成后可由用户显式请求 DeepSeek AI 解读；Phase 8.10 已把离线、版本化定价快照派生的 Cost Audit Metadata 原子写入 Receipt V3，Phase 8.11 进一步加入 immutable Pricing Policy Catalog 与人工核验的更新工作流，Phase 8.12/8.12.1 建立并加固 deterministic Retry eligibility contract，Phase 8.13 冻结 multi-attempt provenance contract，Phase 8.14/8.14.1 新增并加固尚未接入 App 的 audited Retry Execution Core，Phase 8.15 独立冻结 deterministic Retry Delay / Backoff Policy Contract，Phase 8.16 把请求延迟的执行与 transition provenance 接入 Retry Execution V2，Phase 8.17 则在 App 之外新增并行的 Receipt V4 与 logical-generation Cost truthfulness contract。只有直接调用 Retry Execution V2 才可能执行等待和多次 Provider invocation；Streamlit 路径仍不使用该 Core，每次显式点击最多调用 Provider 一次，并继续生成 Receipt V3。历史 Policy 与 Receipt 不会因 Catalog 后续新增版本而被改写，成本计算不发起网络请求，也不代表 Provider 最终账单。项目仍不使用数据库，也不包含登录或权限系统。
+核心运营计算与报表链路不依赖任何大模型。确定性分析完成后可由用户显式请求 DeepSeek AI 解读；Phase 8.10 已把离线、版本化定价快照派生的 Cost Audit Metadata 原子写入 Receipt V3，Phase 8.11 进一步加入 immutable Pricing Policy Catalog 与人工核验的更新工作流，Phase 8.12/8.12.1 建立并加固 deterministic Retry eligibility contract，Phase 8.13 冻结 multi-attempt provenance contract，Phase 8.14–8.16 完成 audited Retry Execution V2 与 requested-delay provenance，Phase 8.17/8.17.1 冻结 Receipt V4 与 logical-generation Cost truthfulness contract，Phase 8.18 把 Streamlit 生产路径迁移到 Retry Execution V2 与 Receipt V4，Phase 8.18.1 再以 App-local success binding、failure consistency allowlist 和脱敏日志完成封板前加固。一次显式 Generate/Regenerate 仍只启动一次 logical generation，但该 logical generation 可在固定 attempt budget 内产生多次 Provider invocation；DeepSeek SDK 自身继续固定 `max_retries=0`。历史 Policy 与 Receipt 不会因 Catalog 后续新增版本而被改写，成本计算不发起网络请求，也不代表 Provider 最终账单。项目仍不使用数据库，也不包含登录或权限系统。
 
 ## 当前阶段
 
@@ -41,12 +41,14 @@ CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨
 - Phase 8.12.1 Permanent Terminal Retry Taxonomy Hardening completed：十个永久 terminal Provider error 已成为不可被 Custom Policy 或直接 Decision 构造覆盖的安全 invariant。
 - Phase 8.13 Attempt Audit Contract completed：immutable ProviderAttemptAudit、AttemptAuditTrail、Usage/Cost 三态和跨 attempt ordering/linkage invariants 已实现，但未接入 Retry execution、Receipt 或 App。
 - Phase 8.13.1 Attempt Audit JSON Integer Representability Hardening completed：所有由 Attempt Audit 作为 JSON number 输出的整数均受独立 512 位十进制可表示性边界保护。
-- Phase 8.14 Retry Execution Core completed：独立执行层已复用单次生成入口、RetryPolicy、Attempt Audit 与 Cost Audit，支持有界 multi-attempt execution；当前 Streamlit App、Receipt V3、Session State 与 AI signature 均未接入该核心。
+- Phase 8.14 Retry Execution Core completed：独立执行层已复用单次生成入口、RetryPolicy、Attempt Audit 与 Cost Audit，支持有界 multi-attempt execution。
 - Phase 8.14.1 Trusted Provider Binding & Pre-Invocation Accounting Hardening completed：Retry Execution 的 provider/model provenance 改由 Adapter canonical identity 唯一提供；不可调用或不可审计的 Provider 在 Attempt 1 前 hard fail，不产生虚假 Attempt Audit。
 - Phase 8.15 Retry Delay / Backoff Policy Contract completed：独立、冻结的 RetryDelayPolicy 与 RetryDelayDecision 已使用正整数毫秒和 deterministic capped linear backoff 表达 retry scheduling；尚未 sleep，也未接入 Retry Execution 或 App。
 - Phase 8.16 Retry Delay Execution + Delay Provenance completed：Retry Execution 已显式升级为 V2；每个实际进入下一 Attempt 的 retry transition 都会先执行 integer-ms sleeper，并在 sleeper 正常返回后保存独立的 Delay Execution provenance。
-- Phase 8.17 Receipt V4 / Logical-Generation Cost Truthfulness Core completed：并行的 Receipt V4 可保存完整 Attempt/Delay provenance，并把最终成功 Attempt estimate 与整个 logical generation 的总 Provider spend 语义明确分离；当前 App 尚未接入。
-- Next phase not started：Streamlit Retry Activation + Receipt V4 Migration、failure-operation audit/session、token-aware budgeting、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账均未实现。
+- Phase 8.17 Receipt V4 / Logical-Generation Cost Truthfulness Core completed：Receipt V4 可保存完整 Attempt/Delay provenance，并把最终成功 Attempt estimate 与整个 logical generation 的总 Provider spend 语义明确分离。
+- Phase 8.18 Streamlit Retry Activation + Receipt V4 Migration completed：显式 AI 操作已由 Retry Execution V2 唯一执行，成功结果原子提交 Receipt V4，失败操作以独立 provenance 保存并保留既有成功快照。
+- Phase 8.18.1 App Integrity Hardening completed：成功快照增加 versioned App-local SHA-256 binding，succeeded-result failure code 使用 closed post-execution allowlist，AI unexpected exception 日志只保留安全 stage 与异常类型。
+- Next phase not started：token-aware budgeting、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账均未实现。
 
 当前已实现的数据流为：
 
@@ -77,57 +79,33 @@ PipelineResult
    ├──→ Insight Context Builder
    │       ↓
    │    Structured Insight Context
-   │       ├──→ Standalone Retry Execution V2
-   │       │    (direct API only; current App does not invoke it)
-   │       │       ↓
-   │       │    Resolve Provider Adapter identity once
-   │       │       ↓
-   │       │    Capture Attempt reference
-   │       │       ↓
-   │       │    generate_insight_with_metadata()
-   │       │    (Prompt → ProviderGeneration → strict JSON → Output Validation)
-   │       │       ↓
-   │       │    Validated result or handled failure
-   │       │       ↓
-   │       │    Cost Audit or RetryDecision
-   │       │       ├──→ final Attempt Audit result
-   │       │       └──→ RetryDelayPolicy → RetryDelayDecision
-   │       │                                ↓
-   │       │                          sleeper(delay_ms)
-   │       │                                ↓ returns
+   │       ↓ explicit Generate / Regenerate only
+   │    Retry Execution V2
+   │       ↓
+   │    Resolve Provider Adapter identity once
+   │       ↓
+   │    One or more audited Provider Attempts
+   │    (Prompt → ProviderGeneration → strict JSON → Output Validation)
+   │       ├──→ handled failure → RetryDecision
+   │       │                         ↓ when retry is approved
+   │       │                    RetryDelayDecision
+   │       │                         ↓
+   │       │                    sleeper(delay_ms requested)
+   │       │                         ↓ returns
    │       │                    Delay Execution Record
-   │       │                                ↓
-   │       │                    capture fresh next-Attempt clock
-   │       │                                ↓
+   │       │                         ↓
    │       │                    next Provider Attempt
-   │       │       ↓
-   │       │    RetryExecutionResult V2
-   │       │    + AttemptAuditTrail V1
-   │       │    + RetryDelayExecutionAudit V1
-   │       │       ↓
-   │       │    Receipt V4 Core (not used by current App)
-   │       │    + LogicalGenerationCostSummary V1
-   │       │
-   │       └──→ Current App single-attempt path
-   │               ↓
-   │            Prompt Contract + Expected Output Schema
-   │               ↓
-   │            InsightProvider
-   │            (Offline Mock or optional DeepSeek Adapter)
-   │               ↓
-   │            InsightGenerationResult(output, usage?)
-   │               ↓
-   │            InsightOutput (legacy API remains available)
-   │               ↓
-   │            Pricing Policy Catalog
-   │            (provider/model/reference-time selection; no network)
-   │               ↓
-   │            Cost Audit Metadata
-   │            (selected immutable pricing snapshot)
-   │               ↓
-   │            AI Generation Receipt V3
-   │               ↓
-   │            Streamlit AI Insights + Estimated Cost
+   │       └──→ success → final Attempt Cost Audit
+   │       ↓
+   │    RetryExecutionResult V2
+   │    + AttemptAuditTrail V1
+   │    + RetryDelayExecutionAudit V1
+   │       ├──→ failed: independent App failure provenance; no Receipt V4
+   │       └──→ succeeded: Receipt V4 + LogicalGenerationCostSummary V1
+   │                         ↓
+   │                    atomic successful Session snapshot
+   │                         ↓
+   │                    Streamlit AI Insights + audit details
    │
    └──→ Report Model
            ↓
@@ -975,7 +953,7 @@ Source:                 https://api-docs.deepseek.com/quick_start/pricing/
 | `off_peak` | USD 0.007 | USD 0.22 | USD 0.66 |
 | `peak` | USD 0.014 | USD 0.44 | USD 1.32 |
 
-Peak 使用 UTC half-open intervals `[start, end)`：Monday–Friday 的 `01:00–04:00` 和 `06:00–10:00`；其他时段及周末均为 `off_peak`。调用方必须显式传入 timezone-aware `occurred_at`，Resolver 先按 instant 转成 UTC；naive datetime 被拒绝，早于 `effective_from_utc` 的时间不会套用当前价格。Pricing Core 不读取 `datetime.now()`，因此同一输入可 replay、audit 和确定性测试。产品层把用户显式点击后、Provider invocation 之前捕获的一次本地 UTC request-start timestamp 作为 `pricing_reference_at`；它不是 Receipt `generated_at`，也不是 Provider 确认的 billing timestamp。
+Peak 使用 UTC half-open intervals `[start, end)`：Monday–Friday 的 `01:00–04:00` 和 `06:00–10:00`；其他时段及周末均为 `off_peak`。调用方必须显式传入 timezone-aware `occurred_at`，Resolver 先按 instant 转成 UTC；naive datetime 被拒绝，早于 `effective_from_utc` 的时间不会套用当前价格。Pricing Core 不读取 `datetime.now()`，因此同一输入可 replay、audit 和确定性测试。Retry Execution V2 在每次实际 Provider invocation 之前分别捕获本地 UTC request-start timestamp 作为该 Attempt 的 `pricing_reference_at`；它不是 Receipt `generated_at`，也不是 Provider 确认的 billing timestamp。
 
 完整 cache hit/miss breakdown 是输入成本估算的必要条件。`usage=None` 使用 `COST_ESTIMATE_UNAVAILABLE / USAGE_UNAVAILABLE`；cache pair 缺失使用 `COST_ESTIMATE_UNAVAILABLE / CACHE_BREAKDOWN_UNAVAILABLE`，不会假设全部 cache hit 或全部 cache miss。Provider/model 不匹配或 Policy 尚未生效使用 `PRICING_POLICY_NOT_APPLICABLE`，并分别携带 `POLICY_NOT_APPLICABLE` / `POLICY_NOT_EFFECTIVE` reason；malformed policy、rate、timestamp 或调用类型使用 `INVALID_PRICING_INPUT`。
 
@@ -1221,7 +1199,7 @@ DeepSeek 官方说明 `finish_reason="length"` 时内容可能被截断，因此
 
 映射后的 public message 不包含 API Key、完整 Prompt、system/user prompt、request body、Authorization header、SDK raw message、provider response body 或 response content。已知 SDK/API error 和 Adapter 内部意外 exception 均不 chain 原始第三方异常，避免通过 request/response metadata 间接保留敏感内容。`InsightProviderError` 交给通用 `generate_insight()` 后会原样传播，不会被错误包装为新的 `PROVIDER_FAILURE`。
 
-Phase 8.4 没有任何自动 Retry：CrossBorder Adapter 不循环调用，OpenAI SDK 明确使用 `max_retries=0`，包括 Timeout、429、500 和 503 都在第一次失败后直接返回稳定错误。Phase 8.4 的职责仅限真实 Provider Adapter，本阶段本身不负责 Streamlit UI；真实 DeepSeek Provider 已在 Phase 8.5 作为显式、可选的 AI Insights 路径接入 Streamlit。Phase 8.7 在 Provider Layer 规范化 Usage，Phase 8.8 将其接入 Receipt V2，Phase 8.10 则在 Provider Layer 外部接入 Cost Audit 与 Receipt V3；Provider Adapter 仍不包含价格、Provider fallback、第二 Provider、token-aware Prompt budgeting、Streaming、Async 或 Tools。
+Phase 8.4 的 Provider Adapter 本身没有自动 Retry：Adapter 不循环调用，OpenAI SDK 明确使用 `max_retries=0`，包括 Timeout、429、500 和 503 都在单次 invocation 失败后返回稳定错误。Phase 8.18 的 Retry Execution V2 位于 Adapter 外部，依据显式 Policy 发起下一次可审计 invocation，因此不会与隐藏的 SDK retry 叠加。Provider Adapter 仍不包含价格、Provider fallback、第二 Provider、token-aware Prompt budgeting、Streaming、Async 或 Tools。
 
 自动化 DeepSeek 测试使用 monkeypatched fake client，以及真实 `openai==3.5.0` SDK 配合内存 `httpx2.MockTransport`。测试会在不触发 DNS 或外部网络的情况下验证最终 HTTP URL、method、request JSON、Thinking/JSON Mode 参数，以及 429/500/503 的单次请求行为。即使测试机器存在 `DEEPSEEK_API_KEY`，pytest 也不会访问 DeepSeek。
 
@@ -1305,11 +1283,11 @@ Retry taxonomy 分成两个不对称层级：十个 **permanent terminal Provide
 
 `RetryDecision` 只有 `retry` 与 `do_not_retry` 两种 action，并使用 `RETRYABLE_TRANSIENT_ERROR`、`ERROR_NOT_RETRYABLE`、`ATTEMPT_LIMIT_REACHED` 三种稳定 reason。Policy 和 Decision 均冻结且拒绝 blank identity、bool/zero/negative attempts、非 tuple allowlist、非 string code、重复 code、terminal allowlist/retry 以及 action/reason/attempt budget 相互矛盾的直接构造。Evaluator 不读取 system time、environment、Streamlit Session、Provider object、Usage、Pricing、Receipt、network 或 random，也不导入 OpenAI SDK 或 DeepSeek Adapter。
 
-Phase 8.12/8.12.1 **不执行 RetryDecision**：没有 retry loop、`time.sleep`、backoff、jitter、Retry UI、Session 字段或第二次 Provider request。OpenAI SDK 继续固定 `max_retries=0`，App 中一次显式 Generate/Regenerate 继续最多调用 Provider 一次，AI signature 与 Receipt V3 均不包含 RetryPolicy。
+Phase 8.12/8.12.1 本身只定义 Policy/Decision，并不执行 RetryDecision。Phase 8.18 的 App 通过 Retry Execution V2 消费该契约；一次显式 Generate/Regenerate 只调用执行器一次，但执行器可在默认 budget 内进行最多两个 Provider Attempts。OpenAI SDK 继续固定 `max_retries=0`，AI signature 仍不包含 RetryPolicy；实际 Policy version 只进入 Attempt Audit provenance。
 
 Phase 8.13 已把这些最低 attempt-level provenance 事实冻结为独立 Domain Contract；Retry execution、Receipt V4 与 App Integration 仍未开始。
 
-`retryable` 仅表示应用策略允许另一次尝试；它不表示失败 attempt 免费、未被 Provider 处理或不会计费。Timeout 或 connection failure 只说明客户端没有获得正常结果，不能证明 Provider 执行了零工作或收取了零费用。当前 Receipt Cost 继续只描述其中保存的 successful recorded generation usage，不包含失败 attempt、潜在 Retry spend 或跨 attempt 成本汇总。
+`retryable` 仅表示应用策略允许另一次尝试；它不表示失败 attempt 免费、未被 Provider 处理或不会计费。Timeout 或 connection failure 只说明客户端没有获得正常结果，不能证明 Provider 执行了零工作或收取了零费用。Receipt V4 顶层 Cost 只描述 final successful Attempt；logical-generation Cost Summary 会把存在前序失败 Attempt 的总花费保持为 `unknown_total`，而不是假设失败成本为零。
 
 ### Attempt Audit Contract / Multi-Attempt Provenance
 
@@ -1386,11 +1364,11 @@ MAX_ATTEMPT_AUDIT_INTEGER_DECIMAL_DIGITS = 512
 
 Cost Decimal 不受该整数边界约束，因为 Cost Audit 已将金额表示为 exact JSON string；包括很大的 finite Decimal 也不会被转为 float、round 或截断。Usage/Cost 的 recorded、unavailable、unknown 三态及 failed Attempt 的 unknown/null 语义保持不变。
 
-Phase 8.13 不修改 RetryPolicy、RetryDecision、Provider、Cost Audit、Pricing、Receipt V3、App、Session State 或 AI Signature；没有 retry loop、second Provider invocation、sleep、backoff、jitter、Retry-After execution 或网络访问。OpenAI SDK 继续固定 `max_retries=0`，一次显式 Generate/Regenerate 仍最多调用 Provider 一次。AttemptAuditTrail 尚未写入 Receipt 或 Session。
+Phase 8.13 本身不修改 RetryPolicy、RetryDecision、Provider、Cost Audit、Pricing、App、Session State 或 AI Signature，也不执行 retry loop、sleep 或网络访问。Phase 8.18 已通过 Retry Execution V2 把其 AttemptAuditTrail 写入成功的 Receipt V4；OpenAI SDK 继续固定 `max_retries=0`，避免产生执行器不可见的 SDK retry。
 
 ### Retry Execution Core / Audited Multi-Attempt Generation
 
-Phase 8.14 在 sealed single-attempt generation、Retry Policy、Attempt Audit 与 Cost Audit 之上新增独立执行层，Phase 8.14.1 进一步冻结 trusted Provider binding 与 pre-invocation accounting。该初始版本是没有 executed-delay provenance 的 Retry Execution V1；Phase 8.16 在不改变 App 路径的前提下将其显式升级为 V2：
+Phase 8.14 在 sealed single-attempt generation、Retry Policy、Attempt Audit 与 Cost Audit 之上新增独立执行层，Phase 8.14.1 进一步冻结 trusted Provider binding 与 pre-invocation accounting。该初始版本是没有 executed-delay provenance 的 Retry Execution V1；Phase 8.16 将其显式升级为 V2，Phase 8.18 再把 V2 接入 App：
 
 ```python
 RETRY_EXECUTION_VERSION = "2"
@@ -1438,7 +1416,7 @@ Generic `InsightProvider` Protocol 与直接调用 `generate_insight_with_metada
 
 Phase 8.14 的 V1 执行循环曾立即进入下一 Attempt；Phase 8.16 的 V2 才执行 Delay Policy 请求的等待。V2 仍没有 jitter 或 `Retry-After`，也没有第二 Provider、fallback、Provider Selection、Async、Streaming、background execution 或网络探测。DeepSeek Adapter 的 OpenAI-compatible SDK 继续固定 `max_retries=0`，因此不会和应用层 attempt budget 叠加隐藏重试。
 
-最重要的产品边界保持不变：`src/insight_retry_execution.py` 可由测试或其他 Python 调用方直接使用，但当前 `app.py` 不导入、不调用它。当前 Streamlit 每次用户显式 Generate/Regenerate 仍最多一次 Provider call；Receipt V3、Session State、AI signature、Generation Details 与下载 JSON 都没有 AttemptAuditTrail 或 RetryDelayExecutionAudit。不能在 Phase 8.18 明确完成 Receipt V4 Migration 与用户体验契约前激活 App Retry。
+Phase 8.18 后，`app.py` 只在用户显式 Generate/Regenerate 时调用一次 `execute_insight_generation_with_retry()`；App 不再直接调用 `generate_insight_with_metadata()` 或 `build_cost_audit_metadata()`。执行器唯一拥有该 logical generation 的全部 Provider Attempts，成功后 AttemptAuditTrail 与 RetryDelayExecutionAudit 进入 Receipt V4；普通 rerender、Generation Details 与下载不会再次调用执行器或 Provider。
 
 ### Retry Delay / Backoff Policy Contract
 
@@ -1543,7 +1521,7 @@ Execution 的 sleeper 接收 exact integer milliseconds。调用方未提供 sle
 
 V2 不根据 delay 推导下一 timestamp。下一 Attempt 的 pricing reference 只在 sleeper 返回后从 injected timezone-aware clock 重新读取，因此 Cost 继续使用真实下一 request-start reference。Delay 不产生货币 Cost 字段；失败 Attempt 的 Usage/Cost 仍是 unknown/null，`final_cost` 仍只表示最终成功 Attempt 的 estimate，不是 logical generation total spend。
 
-当前 Streamlit 仍不使用 Retry Execution V2，每次用户显式 Generate/Regenerate 最多一次 Provider invocation。OpenAI SDK 继续固定 `max_retries=0`；Receipt V3、Attempt Audit V1、RetryDelayPolicy V1、RetryPolicy/RetryDecision、Cost/Pricing 与 Provider contracts 均保持不变。V2 没有 jitter、`Retry-After`、HTTP header parsing、第二 Provider 或 Provider fallback。
+当前 Streamlit 使用 Retry Execution V2：每次用户显式 Generate/Regenerate 启动一次 logical generation，内部可产生多次可审计 Provider invocation。OpenAI SDK 继续固定 `max_retries=0`；Attempt Audit V1、RetryDelayPolicy V1、RetryPolicy/RetryDecision、Cost/Pricing 与 Provider contracts 均保持不变。V2 没有 jitter、`Retry-After`、HTTP header parsing、第二 Provider 或 Provider fallback。
 
 ### Receipt V4 / Logical-Generation Cost Truthfulness Core
 
@@ -1551,12 +1529,12 @@ Phase 8.17 在 sealed Receipt V3 旁新增独立版本，而不是修改同一�
 
 ```text
 Receipt V3
-= current Streamlit receipt
-= current single-attempt production path
+= sealed historical contract
+= not reconstructed into V4
 
 Receipt V4
-= retry-aware domain core
-= not imported or used by current Streamlit App
+= current retry-aware Streamlit success receipt
+= Attempt/Delay provenance + logical-generation cost truth
 ```
 
 公开 API 为：
@@ -1636,14 +1614,12 @@ Logical-generation Cost 使用三个精确状态：
 final successful Attempt estimate != logical-generation total Provider spend
 ```
 
-V4 使用显式 `to_dict()`，不使用 `dataclasses.asdict()`；Cost Summary 的 Decimal 金额保存为 exact plain-decimal JSON string，Usage 与 Attempt/Delay counters 保持 JSON integer。Attempt Audit 复用自身 512 位边界；V4 persistence boundary 对 `after_attempt_number`、DelayDecision `attempts_completed` 和 `delay_ms` 另外执行 512 位十进制 numeric bound。结构合法但 `delay_ms=10**5000` 的 Result V2 会在 Receipt V4 construction 阶段拒绝，而不是等到 `json.dumps()` 才失败；验证不调用 `str(value)`，也不修改 `sys.set_int_max_str_digits`。
+V4 使用显式 `to_dict()`，不使用 `dataclasses.asdict()`；Cost Summary 的 Decimal 金额保存为 exact plain-decimal JSON string，Usage 与 Attempt/Delay counters 保持 JSON integer。Attempt Audit 复用自身 512 位边界；V4 persistence boundary 对 `metric_record_count`、`diagnostic_signal_count`、`priority_insight_count`、`after_attempt_number`、DelayDecision `attempts_completed` 和 `delay_ms` 统一执行 512 位十进制 numeric bound。结构合法但任一受保护整数为 `10**5000` 时会在 Receipt V4 construction 阶段拒绝，而不是等到 `json.dumps()` 才失败；验证不调用 `str(value)`，也不修改 `sys.set_int_max_str_digits`。
 
 V4 `to_dict()` 每次返回独立的 nested mappings，可由 `json.dumps(..., ensure_ascii=False, allow_nan=False)` 直接序列化。Receipt 继续不保存 Prompt、raw Provider response、raw exception、API key、HTTP header/body、业务 source rows、DataFrame 或完整 InsightOutput 文本。V4 不读取网络、不获取实时 Pricing、不重算 Cost、不升级历史 V3，也不从 V3 的 Usage/Cost 猜测缺失 Attempt 或 Delay provenance。
 
 Remaining issues：
 
-- Streamlit Retry Activation + Receipt V4 Migration
-- Failure-operation audit/session semantics
 - Token-aware budgeting
 - Second Provider
 - Provider Selection
@@ -1846,11 +1822,11 @@ UI 结构化区分并展示稳定 Code：
 
 Pipeline/Diagnostics 失败不会伪装为 SUCCESS。Report 生成失败不会清除已经成功产生的 Validation、Metrics 和 Diagnostics，只隐藏 Download Button 并在 Excel Report 区域显示 Report Error。`KeyboardInterrupt` 和 `SystemExit` 不在普通 Exception boundary 内。
 
-已知的 `DataLoadError`、`PipelineError`、`MetricsCalculationError`、`DiagnosticsError` 和 `ReportError` 按既有结构化路径展示，不记录为 unexpected server failure。其他未预期的 application/report exception 使用 Python 标准 `logger.exception(...)` 在服务器侧记录 exception 与 traceback；UI 仍只显示稳定的通用 Code 和安全消息，不显示原始异常文本、traceback、文件路径或行号。应用不在日志中写入上传 bytes、完整 DataFrame 或业务数据内容，且不在模块 import 时配置全局 logging handler。
+已知的 `DataLoadError`、`PipelineError`、`MetricsCalculationError`、`DiagnosticsError` 和 `ReportError` 按既有结构化路径展示，不记录为 unexpected server failure。其他未预期的非 AI application/report exception 使用 Python 标准 `logger.exception(...)` 在服务器侧记录 exception 与 traceback；Phase 8.18.1 AI 路径则遵循后文的独立脱敏日志契约。UI 仍只显示稳定的通用 Code 和安全消息，不显示原始异常文本、traceback、文件路径或行号。应用不在日志中写入上传 bytes、完整 DataFrame 或业务数据内容，且不在模块 import 时配置全局 logging handler。
 
 ### Optional AI Insights
 
-AI 区域只在当前 analysis signature 对应的 `PipelineResult.status == SUCCESS` 时出现；合法的 Empty SUCCESS 或无 Diagnostic Signals 的 SUCCESS 同样允许生成。上传、文件变化、Analysis Level 变化、`Run Analysis`、普通 rerender、表格展示和 Excel 下载都不会调用 Provider。只有用户显式点击 `Generate AI Insights`，或已有当前结果后显式点击 `Regenerate AI Insights`，才会分别触发最多一次请求；没有自动 Retry。
+AI 区域只在当前 analysis signature 对应的 `PipelineResult.status == SUCCESS` 时出现；合法的 Empty SUCCESS 或无 Diagnostic Signals 的 SUCCESS 同样允许生成。上传、文件变化、Analysis Level 变化、`Run Analysis`、普通 rerender、表格展示、Generation Details、Excel 下载和 Receipt 下载都不会启动 AI。只有用户显式点击 `Generate AI Insights`，或已有当前结果后显式点击 `Regenerate AI Insights`，才会恰好调用一次 Retry Execution V2；该 logical generation 可在默认 Policy budget 内执行一个或多个 Provider Attempts。
 
 App 只调用封板后的公共链路：
 
@@ -1858,32 +1834,38 @@ App 只调用封板后的公共链路：
 PipelineResult
 → build_insight_context()
 → DeepSeekInsightProvider()
-→ capture one local UTC request-start pricing reference
-→ generate_insight_with_metadata()
-→ InsightGenerationResult(validated output, normalized usage | None)
-→ build_cost_audit_metadata(..., pricing_reference_at=...)
-  → select_pricing_policy(provider/model/reference)
-  → existing estimate_generation_cost(selected policy)
-→ build_insight_generation_receipt(..., usage=..., cost=...)
+→ execute_insight_generation_with_retry(context, provider=provider)
+  → RetryPolicy / RetryDelayPolicy defaults
+  → one or more audited Provider Attempts
+  → RetryExecutionResult V2
+→ if failed: store independent failure provenance; no Receipt
+→ if succeeded: capture receipt-generation UTC time
+→ build_insight_receipt_v4(..., execution_result=result)
+→ build App-local versioned success binding
+→ atomically commit Output + Receipt V4 + success signature + binding
 ```
 
-App 不导入或指定某一版 PricingPolicy，也不提供 Policy selector UI；Catalog routing 由 Cost Audit Builder 内部负责。Provider 只在按钮事件内构造，不在 import 或页面启动时构造，也不保存在 Session State。`DEEPSEEK_API_KEY` 只由运行环境提供，App 不提供 Key 输入框；没有 Key 时，上传、确定性分析、Metrics、Diagnostics 和 Excel 下载仍正常工作，只有点击 AI 按钮时显示安全配置提示。
+App 不直接调用 `generate_insight_with_metadata()` 或 `build_cost_audit_metadata()`，也不复制 RetryPolicy、RetryDelayPolicy、clock 或 sleeper defaults；Retry Execution 唯一拥有全部 Provider invocation、每次 Attempt 的 request-start pricing reference、Cost Audit 与 Retry/Delay provenance。App 不导入或指定某一版 PricingPolicy，也不提供 Policy selector UI。Provider 只在按钮事件内构造，不在 import 或页面启动时构造，也不保存在 Session State。`DEEPSEEK_API_KEY` 只由运行环境提供，App 不提供 Key 输入框；没有 Key 时，上传、确定性分析、Metrics、Diagnostics 和 Excel 下载仍正常工作，只有点击 AI 按钮时显示安全配置提示。
 
-AI Session State 与 PipelineResult/ReportData 分离，只保存 `ai_output`、`ai_receipt`、安全的 `ai_error_code` / `ai_error_message` 和 `ai_signature` 五个字段；不新增独立 `ai_usage`、`ai_cost`、`ai_cost_estimate`、`ai_pricing` 或 `ai_pricing_reference_at`。`ai_output` 必须是已经通过 Generic Boundary 与 Output Validator 的 `InsightOutput`；`ai_receipt` 必须是与该 Output 同次生成的 `InsightGenerationReceipt`，Usage 与 Cost Audit 只作为该 Receipt 内的 generation provenance 保存。Session State 不保存 API Key、Provider/Client、Prompt、raw JSON 或 raw response。AI signature 由当前 analysis signature、Insight Context/Prompt/Output version 和固定 DeepSeek model 组成，不包含 API Key。文件名、上传 bytes 或 `group_by` 改变会在渲染前同时清除旧 Output、Receipt、Usage、Cost 与错误；相同签名的普通 rerender 和重新分析保留已有完整配对结果。A→B→A 不恢复旧结果，也不建立 AI 缓存。
+AI Session State 与 PipelineResult/ReportData 分离。成功快照固定为 `ai_output`、`ai_receipt`、`ai_signature`、`ai_success_binding`：四者必须全为 `None`，或同时存在并通过同一成功 logical generation 的 App-local binding 校验；`ai_receipt` 只接受 `InsightGenerationReceiptV4`。`AI_SUCCESS_BINDING_VERSION = "1"` 使用 canonical strict JSON 的 Output public mapping、Receipt V4 `to_dict()` mapping、AI signature 和 binding version 计算 SHA-256，只在 Session 中保存固定长度 digest，不保存 canonical payload。该值只用于发现意外损坏、错配或未来 App regression，不是 Provider provenance、导出 Receipt 字段、密码学认证或抵抗能够同时改写所有 Session 字段的恶意攻击保证。最新失败操作独立保存为 `ai_failure = AiGenerationFailure(signature, error_code, execution_result | None)`，不持久化重复 error message，也不拆分保存 Attempt/Delay/Usage/Cost。Session State 不保存 API Key、Provider/Client、Prompt、raw JSON 或 raw response。
 
-首次 AI generation 失败时只显示按 stable code 映射的安全产品文案，不产生 partial output 或 Receipt，也不影响当前 Validation、Metrics、Diagnostics、Excel 或 Pipeline status。`INVALID_PROVIDER_USAGE`、`INVALID_COST_AUDIT`、`INVALID_PRICING_INPUT` 与 `INVALID_PRICING_CATALOG` 使用安全、脱敏文案。已知的 Cost unavailable（Usage 缺失、cache breakdown 缺失、Policy 尚未生效或不适用）不是 generation error，仍会生成 Receipt V3；Catalog corruption、非法 Pricing input 或 unexpected Cost exception 则使整次 generation fail closed。已有成功结果后的 Regenerate hard failure 会同时保留并明确标注上一份 Output + Receipt（含旧 Usage/Cost）；成功 Regenerate 即使新 Cost unavailable，也会把整份新 Output + Receipt 原子替换并清除错误。Receipt Builder 失败同样不保存孤立 Output，也不自动重试 Provider。
+`ai_failure.execution_result` 表示该失败 App operation 已经完成的 Retry Execution 事实：logical failure 保存 `status="failed"` Result，并要求 failure code 与 Result 最终 code 完全一致；若执行成功但 Receipt V4 construction、logical-cost construction 或其他 post-execution App processing 失败，则保存 `status="succeeded"` Result，保留已经发生的 Provider/Attempt/Delay/Usage/Cost provenance。Succeeded Result 只允许与 `INVALID_RECEIPT_V4_INPUT`、`INVALID_LOGICAL_GENERATION_COST`、`UNEXPECTED_AI_ERROR` 三个 closed post-execution code 组合；Provider/Retry failure code 与 succeeded Result 的矛盾组合会 fail closed。若 context、provider construction、RetryExecutionError 或其他 pre-result failure 没有返回 completed Result，则为 `None`，UI 明确显示详细 Attempt Audit unavailable，而不是宣称零 Attempts。新失败只替换上一份 failure；新成功用一次 Session update 原子替换整个成功快照并清除 failure。
 
-旧 Session 中只有 Output、只有 Receipt、Receipt V1 或 Receipt V2 时会安全清除，不现场伪造 `pricing_reference_at`，也不按当前价格升级历史 Receipt；用户必须显式重新生成。V3 的 `usage=None + cost.status="unavailable"` 是合法当前状态，不视为 legacy。清理 legacy AI state 不调用 Provider，并保留当前 Pipeline、Metrics、Diagnostics 与 Excel。用户之后再次点击属于新的显式请求，不是自动 Retry。
+AI signature 仍只由当前 analysis signature、Insight Context/Prompt/Output version 和固定 DeepSeek model 组成，不包含 RetryPolicy、RetryDelayPolicy、RetryExecution、Receipt 或 success-binding version。Success binding 是独立 App-local integrity metadata，不改变 AI identity。文件名、上传 bytes 或 `group_by` 改变会在渲染前同时清除 Output、Receipt、success signature、binding 与 failure；相同签名的普通 rerender 和重新分析保留通过 binding 校验的状态且不调用 Provider。A→B→A 不恢复旧结果，也不建立 AI 缓存。
 
-AI Output 按 Validator 保留的顺序展示 Executive Summary、Scope、Confidence、Observation、Evidence Codes、Possible Explanations、Recommended Checks 和 Overall Limitations；`priority_insights=[]` 是合法空状态。UI 不展示 Prompt 或 raw JSON，不重新计算指标，也不重新验证 Output Schema。Token Usage 与 Estimated Cost 只从历史 Receipt 的 `usage` 和 `cost` 读取；它们不修改下一次请求参数、不驱动预算限制，也不在 rerender 时按当前时间或当前 Policy 重算。界面明确声明：Diagnostic Signals 是 observations，Possible Explanations 是 hypotheses，Recommended Checks 是 investigations，并非已证实的 Root Cause 或保证有效的行动。
+首次 AI generation 失败时只显示按 stable code 派生的安全产品文案，不产生 partial Output 或 Receipt，也不影响当前 Validation、Metrics、Diagnostics、Excel 或 Pipeline status。Completed failed execution 不构建 Receipt V4。已有成功结果 A 后的 Regenerate B 失败时，A 的 Output/Receipt/signature 原样保留，UI 明确表达“最新 regeneration 失败、继续展示上一份成功结果”；B 的 failure provenance 不会写进 Receipt A。执行成功但 V4 Builder 失败时同样不提交孤立 Output B，也不伪造失败 Receipt，但会在 `ai_failure.execution_result` 中保留 B 的 succeeded execution provenance。
+
+旧 Session 中只有 Output、只有 Receipt、Receipt V1/V2/V3、缺失 signature、缺失/畸形 binding，或 Output/Receipt/binding 不匹配时都会安全清除。Phase 8.18 遗留的 Output + Receipt V4 + signature 三元组不会被静默补算 binding，因为 App 无法证明这些成员曾被同一次原子操作提交；不会从 V3 猜测缺失的 AttemptAudit/DelayAudit，也不会现场重建 V4。旧 `ai_error_code` / `ai_error_message` keys 在初始化时删除，迁移后只有 `ai_failure` 是 active failure system。清理 legacy AI state 不调用 Provider，并保留当前 Pipeline、Metrics、Diagnostics 与 Excel；用户之后必须显式重新生成。
+
+AI Output 按 Validator 保留的顺序展示 Executive Summary、Scope、Confidence、Observation、Evidence Codes、Possible Explanations、Recommended Checks 和 Overall Limitations；`priority_insights=[]` 是合法空状态。UI 不展示 Prompt 或 raw JSON，不重新计算指标，也不重新验证 Output Schema。Token Usage、final successful Attempt Cost、logical-generation Cost Summary 与 Retry/Delay provenance 只从历史 Receipt V4 读取；它们不修改下一次请求参数、不驱动预算限制，也不在 rerender 时按当前时间或当前 Policy 重算。界面明确声明：Diagnostic Signals 是 observations，Possible Explanations 是 hypotheses，Recommended Checks 是 investigations，并非已证实的 Root Cause 或保证有效的行动。
 
 ### AI Generation Receipt
 
-`InsightGenerationReceipt` 是一个独立于 `InsightOutput` 的 immutable generation envelope，Receipt Contract 使用独立的 `INSIGHT_RECEIPT_VERSION = "3"`。Receipt 只在 validated Output、optional normalized Usage 和 Cost Audit Metadata 都构建成功后创建；`generated_at` 使用 receipt construction 时的 timezone-aware UTC ISO 8601，与 Cost 的 request-start `pricing_reference_at` 是两个不同时间语义。
+`InsightGenerationReceiptV4` 是一个独立于 `InsightOutput` 的 immutable retry-aware generation envelope，当前 App success Receipt 使用 `INSIGHT_RECEIPT_V4_VERSION = "4"`。Receipt 只为 `RetryExecutionResult.status="succeeded"` 构建；`generated_at` 在成功执行完成后、V4 construction 前捕获为 timezone-aware UTC ISO 8601，与每个 Attempt 的 request-start `pricing_reference_at` 是不同时间语义。
 
-Receipt V3 固定包含 14 个顶层 JSON 字段：`version`、`generated_at`、完整 `analysis_signature`、canonical `group_by`、`context_version`、`prompt_version`、`output_version`、`provider`、`model`、`metric_record_count`、`diagnostic_signal_count`、`priority_insight_count`、`usage` 和必填的 `cost`。`usage` 固定为 nested object 或 `null`；存在时明确包含 `prompt_tokens`、`completion_tokens`、`total_tokens`、`prompt_cache_hit_tokens`、`prompt_cache_miss_tokens` 和 `reasoning_tokens`。Receipt 只接受 immutable `ProviderUsage`，不保存 SDK object、不估算 token，也不复制 token arithmetic 验证。分析签名直接消费现有 deterministic identity，不在 Receipt Layer 重新计算 hash；`group_by` 来自当前分析配置，不从 Output scope 倒推。三个计数分别来自 `InsightContext.metric_records`、`InsightContext.diagnostic_signals` 和 `InsightOutput.priority_insights`。
+Receipt V4 保留 V3 的 14 个顶层字段，并新增 `attempt_audit`、`delay_audit`、`logical_generation_cost`。顶层 `usage` / `cost` 只代表 final successful Attempt；Provider、model、Usage、Cost、Attempt Audit、Delay Audit 和 logical cost 均从 succeeded `RetryExecutionResult` 派生，App 不手工 override。分析签名直接消费现有 deterministic identity，不在 Receipt Layer 重新计算；`group_by` 来自当前分析配置，不从 Output scope 倒推。
 
-Receipt V3 的 Usage 继续受独立的 512 位十进制 persistence/presentation bound 约束。恰好 512 位的非负整数可构建、显示并序列化；513 位及以上在 Receipt construction 阶段以脱敏的 `INVALID_RECEIPT_INPUT` fail closed，因此发生在 AI Output/Receipt pair 提交 Session 之前。Receipt Layer 只检查 decimal representability，ProviderUsage 的非负、bool、总数、cache 和 reasoning arithmetic invariants 仍完全由 Provider Layer 负责。Token counts 在 JSON 中继续是 integer number，不转为 string。
+Receipt V4 延续并扩展 512 位十进制 persistence/presentation bound：受保护的 Usage、Attempt、Delay 与顶层 count 在 JSON 中保持 integer number，不转为 string；越界会在 V4 construction 完成前 fail closed，因此任何新 Output 都不会先于有效 Receipt 进入 Session。Receipt V3 仍是 sealed 历史 contract，但当前 App 不渲染、不下载也不原地升级 V3。
 
 ### Cost Audit Metadata
 
@@ -1913,13 +1895,15 @@ def build_cost_audit_metadata(
 
 未显式提供 `policy` 时，Builder 在函数调用期读取 Production Catalog 并完成选择；显式 `policy` 优先且 Catalog 不参与。状态只允许 `available` 与 `unavailable`。`available` 必须包含 `GenerationCostEstimate`、不得有 unavailable reason，并且 Policy version 与 UTC reference string 必须和 estimate 完全一致；`unavailable` 必须没有 estimate，并保存稳定非空 reason。`USAGE_UNAVAILABLE`、`CACHE_BREAKDOWN_UNAVAILABLE`、`POLICY_NOT_EFFECTIVE` 和 `POLICY_NOT_APPLICABLE` 都是正常的可审计 unavailable 状态，不会把已验证 AI generation 标记为失败。Usage/Cache 不可用时仍已选择具体 Policy，因此记录其 version；Catalog 尚未选择出任何 Policy 的 not-effective/not-applicable 情况使用稳定 `pricing_policy_version="unselected"`，不把无关 provider/model 的 Policy 冒充为已选 snapshot。该值只表示本次 Cost Audit 没有选中任何 PricingPolicy snapshot；任何放入 Catalog 或作为 Cost Audit explicit pricing snapshot 提供的真实 Policy 都不得使用 reserved version `"unselected"`。explicit reserved Policy 属于 `INVALID_COST_AUDIT` hard failure，不会生成 `available / unselected`。`INVALID_PRICING_CATALOG`、`INVALID_PRICING_INPUT` 或 unexpected Pricing/Cost exception 不会被伪装成 `unavailable`，而是在 Session 原子提交前 fail closed。
 
-App 只在用户显式 Generate/Regenerate 后捕获一次 `pricing_reference_at`，顺序固定为：构造 Provider、立即捕获本地 timezone-aware UTC timestamp、开始 Provider invocation、获得 validated Output/Usage、构建 Cost Audit、构建 Receipt、最后原子提交 Output + Receipt。这个 timestamp 是应用的 deterministic request-start reference convention；例如请求在 `03:59:59 UTC` 开始并于 `04:00:05 UTC` 完成时，当前 estimator 仍使用 `03:59:59`。它不是 Provider server receive time、response completion time、invoice time 或 Provider 确认的 billing timestamp，因此 Estimated Cost 不能解释为最终扣费。
+Retry Execution V2 为每个 Provider Attempt 独立捕获 `pricing_reference_at`，顺序固定为：读取本地 timezone-aware UTC clock、开始该次 Provider invocation、获得 validated Output/Usage 后为成功 Attempt 构建 Cost Audit。Retry 前会先执行 requested delay，sleeper 返回后再读取下一 Attempt 的新 reference；不会用前一时间加 delay 推导。App 另在 succeeded execution 返回后、Receipt V4 construction 前捕获 `generated_at`。这两个 timestamp 都不是 Provider invoice time 或 Provider 确认的 billing timestamp，因此 Estimate 不能解释为最终扣费。
 
 Cost Audit 的 `to_dict()` 与 Estimate nested object 都显式构造，不使用 `asdict()`。四个 monetary Decimal 字段固定序列化为 exact plain-decimal JSON string，例如 `"0.0004484"`；不转换为 float、不使用科学计数显示、不加货币符号、不 round 或 quantize。币种由 nested estimate 的 `currency="USD"` 表达。相对地，Usage token counts 继续是 JSON integer number。Receipt 只存 `pricing_policy_version` 关联本地 snapshot，不重复保存 source URL 或 `verified_at`。
 
-`Generation Details` expander 展示可读 UTC receipt time、DeepSeek 产品标签、固定 model、分析粒度、Context/Prompt/Output/Receipt versions、三类记录数量、analysis ID 前 12 位、Token Usage，以及 Receipt 内保存的 Estimated total API cost、pricing tier、pricing reference、pricing policy version、cache-hit input cost、cache-miss input cost 和 completion cost。Cost unavailable 时使用中性文案与安全 reason mapping，不显示 generation error。界面固定说明 Estimate 来自 recorded Usage 与 stored Pricing Policy snapshot，并非 Provider final billed amount；不做 display rounding、FX、CNY/RMB、budget enforcement 或 actual billing claim。
+`Generation Details` expander 展示可读 UTC receipt time、Provider/model、分析粒度、Context/Prompt/Output/Receipt versions、三类记录数量、analysis ID、Token Usage、Provider Attempt 数、completed retry-delay transition 数、Retry/Delay Policy versions 与每次 requested delay。Delay wording只说明传给 sleeper 并正常返回的 requested milliseconds，不声称实际墙钟 elapsed time。
 
-Generation Details、nested Cost serialization 和 Receipt JSON 下载准备位于同一窄范围 passive presentation safety boundary 内。这里的 unexpected `Exception` 只在服务器侧按既有 fixed-message logging policy 记录，并向 UI 显示稳定通用文案，不把原始 exception text 写入 UI 或 Session；`KeyboardInterrupt` 与 `SystemExit` 不会被吞。展示失败不会被改写成 generation failure，不覆盖 `ai_error_code` / `ai_error_message`，不清除已验证的 Output/Receipt/signature pair，也不影响 Pipeline、Metrics、Diagnostics 或 Excel。已验证的 AI Output 仍正常展示，只有 Generation Details / Receipt download 降级；普通 rerun 不重建 Receipt、不重算 Cost、不调用或 retry Provider。
+Cost UI 明确分成两层：Receipt 顶层 `cost` 显示为 `Final successful attempt estimated API cost (USD)` 或 unavailable；`logical_generation_cost` 单独显示 `fully_estimated`、`unavailable` 或 `unknown_total`。多 Attempt success 即使 final estimate available，也绝不会把该金额标成 logical-generation total；只要存在 prior failed Attempt，失败侧 Usage/Cost 与整个 total spend 都保持 unknown。界面继续声明 Estimate 来自 recorded Usage 与 stored Pricing Policy snapshot，并非 Provider final billed amount；不做 display rounding、FX、CNY/RMB、budget enforcement 或 actual billing claim。
+
+Generation Details、nested Cost serialization 和 Receipt JSON 下载准备位于同一窄范围 passive presentation safety boundary 内。Phase 8.18 AI execution、success-binding validation 与 rendering path 的 unexpected `Exception` 只记录 closed stage 和 Python exception class name；服务器日志、UI 与 Session 都不记录原始 exception message、arguments 或 traceback。`KeyboardInterrupt` 与 `SystemExit` 不会被吞。展示失败不会被改写成 generation failure，不覆盖 `ai_failure`，不清除已经通过 binding 校验的 Output/Receipt/signature/binding snapshot，也不影响 Pipeline、Metrics、Diagnostics 或 Excel。已验证的 AI Output 仍正常展示，只有 Generation Details / Receipt download 降级；普通 rerun 不重建 Receipt、不重算 Cost、不调用 Retry Execution 或 Provider。
 
 `Download AI Receipt` 将 `to_dict()` 显式公开契约序列化为 strict UTF-8 JSON，文件名保持 `crossborder_ops_ai_receipt_<12-char-analysis-id>.json`，不拼接原上传文件名。展示或下载 Receipt 不调用 Provider、不发起 pricing HTTP、不读取 current time、不重建 Receipt，也不改变 `generated_at` 或 `pricing_reference_at`。Receipt 不包含 API key、Prompt、raw Provider response、SDK request ID、原始数据行、具体业务指标值、Evidence、Executive Summary 或模型解释。Receipt JSON 与确定性 Excel 报告独立下载；AI 内容、Receipt、Usage 和 Cost Audit 都不写入 Excel。
 

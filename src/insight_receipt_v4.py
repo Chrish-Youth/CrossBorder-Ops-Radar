@@ -67,11 +67,45 @@ def _validate_delay_json_integer(
         raise _invalid_receipt_v4(
             f"{field_name} must be an integer greater than or equal to 1."
         )
-    if value > _MAX_RECEIPT_V4_JSON_INTEGER:
-        raise _invalid_receipt_v4(
+    _validate_json_integer_upper_bound(
+        value,
+        boundary_message=(
             "Delay provenance contains an integer outside the Receipt V4 "
             "JSON boundary."
+        ),
+    )
+
+
+def _validate_json_integer_upper_bound(
+    value: int,
+    *,
+    boundary_message: str,
+) -> None:
+    """Enforce the shared V4 JSON integer bound without string conversion."""
+
+    if value > _MAX_RECEIPT_V4_JSON_INTEGER:
+        raise _invalid_receipt_v4(boundary_message)
+
+
+def _validate_top_level_count_json_integer(
+    value: object,
+    *,
+    field_name: str,
+) -> None:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, int)
+        or value < 0
+    ):
+        raise _invalid_receipt_v4(
+            f"{field_name} must be a non-negative integer."
         )
+    _validate_json_integer_upper_bound(
+        value,
+        boundary_message=(
+            "Receipt V4 top-level count exceeds the JSON integer boundary."
+        ),
+    )
 
 
 def _validate_delay_audit_for_receipt(
@@ -152,6 +186,15 @@ class InsightGenerationReceiptV4:
                 "Receipt V4 version does not match the current contract."
             )
         self._validated_v3_base_receipt()
+        for field_name in (
+            "metric_record_count",
+            "diagnostic_signal_count",
+            "priority_insight_count",
+        ):
+            _validate_top_level_count_json_integer(
+                getattr(self, field_name),
+                field_name=field_name,
+            )
         if not isinstance(self.attempt_audit, AttemptAuditTrail):
             raise _invalid_receipt_v4(
                 "attempt_audit must be AttemptAuditTrail."
