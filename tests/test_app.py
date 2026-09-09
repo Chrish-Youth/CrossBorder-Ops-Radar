@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import csv
+from copy import deepcopy
 from io import BytesIO, StringIO
 import importlib
 import logging
+import json
 from pathlib import Path
 
 import pandas as pd
 from openpyxl import load_workbook
 import pytest
 from streamlit.testing.v1 import AppTest
+from streamlit.dataframe_util import (
+    convert_arrow_bytes_to_pandas_df,
+    convert_pandas_df_to_arrow_bytes,
+)
 
 import app
+from src import ui_text as ui
 import src.pipeline as pipeline_module
 import src.report as report_module
 from src.config import REQUIRED_COLUMNS
@@ -77,9 +84,9 @@ def upload_and_run(
     group_label: str = "SKU",
 ) -> AppTest:
     at = app_test()
-    at.file_uploader[0].upload(filename, content, mime_type).run()
-    at.selectbox[0].select(group_label).run()
-    return at.button[0].click().run(timeout=20)
+    at.file_uploader("operations_data_upload").upload(filename, content, mime_type).run()
+    at.selectbox("analysis_level").select(group_label).run()
+    return at.button("run_analysis").click().run(timeout=20)
 
 
 def workbook_from_session(at: AppTest):
@@ -445,10 +452,10 @@ def test_initial_ui_waits_for_upload_and_does_not_run_automatically() -> None:
 
     assert list(at.exception) == []
     assert at.title[0].value == app.APP_TITLE
-    assert at.selectbox[0].value == app.DEFAULT_GROUP_BY_LABEL
-    assert at.button[0].disabled is True
+    assert at.selectbox("analysis_level").value == app.DEFAULT_GROUP_BY_LABEL
+    assert at.button("run_analysis").disabled is True
     assert [message.value for message in at.info] == [
-        "Upload a CSV or XLSX file to begin."
+        '上传 CSV 或 XLSX 文件开始分析。'
     ]
     assert len(at.dataframe) == 0
     assert len(at.download_button) == 0
@@ -456,14 +463,14 @@ def test_initial_ui_waits_for_upload_and_does_not_run_automatically() -> None:
 
 def test_uploaded_file_is_ready_but_not_analyzed_until_button_click() -> None:
     at = app_test()
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         SAMPLE_PATH.name,
         SAMPLE_PATH.read_bytes(),
         "text/csv",
     ).run()
 
-    assert at.button[0].disabled is False
-    assert [message.value for message in at.info] == ["Ready to analyze."]
+    assert at.button("run_analysis").disabled is False
+    assert [message.value for message in at.info] == ['文件已就绪，点击“运行分析”。']
     assert len(at.dataframe) == 0
     assert at.session_state["pipeline_result"] is None
 
@@ -473,21 +480,21 @@ def test_sample_success_ui_shows_validation_metrics_diagnostics_and_download() -
 
     assert list(at.exception) == []
     assert [heading.value for heading in at.subheader] == [
-        "Upload and configuration",
-        "Validation",
-        "Metrics",
-        "Diagnostic Signals",
-        "Excel Report",
-        "AI Insights",
+        '上传与配置',
+        '数据校验',
+        '运营指标',
+        '诊断信号',
+        'Excel 报表',
+        'AI 洞察',
     ]
     assert [(metric.label, metric.value) for metric in at.metric] == [
-        ("Raw Rows", "23"),
-        ("Valid Rows", "14"),
-        ("Excluded Rows", "9"),
-        ("Warning Rows", "3"),
-        ("Fatal Issues", "0"),
-        ("Error Issues", "8"),
-        ("Warning Issues", "3"),
+        ('原始行数', "23"),
+        ('有效行数', "14"),
+        ('排除行数', "9"),
+        ('警告行数', "3"),
+        ('致命问题数', "0"),
+        ('错误问题数', "8"),
+        ('警告问题数', "3"),
     ]
     assert [len(table.value) for table in at.dataframe] == [11, 12, 11]
     assert len(at.download_button) == 1
@@ -508,7 +515,7 @@ def test_xlsx_upload_runs_through_pipeline_without_ui_format_sniffing() -> None:
     )
 
     assert list(at.exception) == []
-    assert "Metrics" in [heading.value for heading in at.subheader]
+    assert '运营指标' in [heading.value for heading in at.subheader]
     assert len(at.download_button) == 1
     assert at.session_state["pipeline_result"].metrics["sku"].tolist() == [
         "SKU-A"
@@ -524,11 +531,11 @@ def test_validation_failed_ui_hides_metrics_but_keeps_excel_download() -> None:
 
     assert list(at.exception) == []
     assert at.session_state["pipeline_result"].status is PipelineStatus.VALIDATION_FAILED
-    assert "File validation failed" in at.error[0].value
+    assert '文件校验未通过' in at.error[0].value
     assert [heading.value for heading in at.subheader] == [
-        "Upload and configuration",
-        "Validation",
-        "Excel Report",
+        '上传与配置',
+        '数据校验',
+        'Excel 报表',
     ]
     assert len(at.dataframe) == 1
     assert at.dataframe[0].value["code"].tolist() == [
@@ -547,7 +554,7 @@ def test_loader_error_ui_is_structured_and_clears_results() -> None:
     )
 
     assert list(at.exception) == []
-    assert [error.value for error in at.error] == ["File could not be loaded."]
+    assert [error.value for error in at.error] == ['文件加载失败。']
     assert any("FILE_READ_ERROR" in markdown.value for markdown in at.markdown)
     assert at.session_state["pipeline_result"] is None
     assert len(at.dataframe) == 0
@@ -565,7 +572,7 @@ def test_pipeline_error_ui_shows_code_and_stage_without_success(
 
     assert list(at.exception) == []
     assert [error.value for error in at.error] == [
-        "Internal pipeline contract error."
+        '数据处理流程契约校验失败。'
     ]
     assert any(
         "INVALID_STAGE_RESULT" in markdown.value and "metrics" in markdown.value
@@ -580,17 +587,17 @@ def test_pipeline_error_ui_shows_code_and_stage_without_success(
     [
         (
             MetricsCalculationError("COUNT_AGGREGATION_OVERFLOW", "overflow"),
-            "Metrics calculation failed.",
+            '指标计算失败。',
             "COUNT_AGGREGATION_OVERFLOW",
         ),
         (
             DiagnosticsError("INVALID_DIAGNOSTIC_INPUT_VALUE", "invalid"),
-            "Diagnostics failed.",
+            '诊断失败。',
             "INVALID_DIAGNOSTIC_INPUT_VALUE",
         ),
         (
             RuntimeError("private traceback detail"),
-            "Unexpected application error.",
+            '应用发生意外错误。',
             "UNEXPECTED_APPLICATION_ERROR",
         ),
     ],
@@ -634,10 +641,10 @@ def test_report_error_ui_keeps_analysis_and_disables_download(
     assert list(at.exception) == []
     assert at.session_state["pipeline_result"].metrics is not None
     assert at.session_state["pipeline_result"].diagnostics is not None
-    assert "Metrics" in [heading.value for heading in at.subheader]
-    assert "Diagnostic Signals" in [heading.value for heading in at.subheader]
+    assert '运营指标' in [heading.value for heading in at.subheader]
+    assert '诊断信号' in [heading.value for heading in at.subheader]
     assert any(
-        error.value == "Excel report could not be generated."
+        error.value == 'Excel 报表生成失败。'
         for error in at.error
     )
     assert any(
@@ -652,7 +659,7 @@ def test_success_then_loader_failure_does_not_leak_previous_results() -> None:
     assert at.session_state["pipeline_result"] is not None
     assert at.session_state["excel_bytes"] is not None
 
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         "broken.xlsx",
         b"not an xlsx workbook",
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -665,17 +672,17 @@ def test_success_then_loader_failure_does_not_leak_previous_results() -> None:
     assert len(at.dataframe) == 0
     assert len(at.download_button) == 0
 
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
 
-    assert [error.value for error in at.error] == ["File could not be loaded."]
+    assert [error.value for error in at.error] == ['文件加载失败。']
     assert at.session_state["pipeline_result"] is None
     assert at.session_state["report_data"] is None
     assert at.session_state["excel_bytes"] is None
     assert at.session_state["report_error"] is None
     assert len(at.dataframe) == 0
     assert len(at.download_button) == 0
-    assert "Metrics" not in [heading.value for heading in at.subheader]
-    assert "Diagnostic Signals" not in [
+    assert '运营指标' not in [heading.value for heading in at.subheader]
+    assert '诊断信号' not in [
         heading.value for heading in at.subheader
     ]
 
@@ -692,7 +699,7 @@ def test_success_then_pipeline_error_and_same_session_recovery(
 
     monkeypatch.setattr(pipeline_module, "run_pipeline", fail_pipeline)
     caplog.set_level(logging.ERROR)
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
 
     assert at.session_state["pipeline_result"] is None
     assert at.session_state["report_data"] is None
@@ -711,7 +718,7 @@ def test_success_then_pipeline_error_and_same_session_recovery(
         "run_pipeline",
         original_run_pipeline,
     )
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
 
     assert list(at.exception) == []
     assert at.session_state["analysis_error"] is None
@@ -735,7 +742,7 @@ def test_unexpected_error_logs_traceback_and_clears_previous_success(
 
     monkeypatch.setattr(pipeline_module, "run_pipeline", fail_pipeline)
     caplog.set_level(logging.ERROR)
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
 
     assert at.session_state["pipeline_result"] is None
     assert at.session_state["report_data"] is None
@@ -787,7 +794,7 @@ def test_report_error_then_same_input_success_clears_error_and_restores_download
         "generate_excel_report",
         original_generate_excel_report,
     )
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
 
     assert list(at.exception) == []
     assert at.session_state["analysis_error"] is None
@@ -806,7 +813,7 @@ def test_same_uploaded_file_can_run_twice_without_pointer_consumption() -> None:
     )
     assert at.session_state["excel_bytes"].startswith(b"PK")
 
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
 
     assert list(at.exception) == []
     assert at.session_state["analysis_signature"] == first_signature
@@ -828,13 +835,13 @@ def test_upload_change_invalidates_old_analysis_state() -> None:
     assert len(at.dataframe) == 3
     old_signature = at.session_state["analysis_signature"]
 
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         "new.csv",
         csv_content(make_row(sku="SKU-NEW")),
         "text/csv",
     ).run()
 
-    assert [message.value for message in at.info] == ["Ready to analyze."]
+    assert [message.value for message in at.info] == ['文件已就绪，点击“运行分析”。']
     assert len(at.dataframe) == 0
     assert len(at.download_button) == 0
     assert at.session_state["pipeline_result"] is None
@@ -851,9 +858,9 @@ def test_group_by_change_invalidates_old_analysis_state() -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
     assert len(at.dataframe[1].value) == 12
 
-    at.selectbox[0].select("Overall").run()
+    at.selectbox("analysis_level").select("Overall").run()
 
-    assert [message.value for message in at.info] == ["Ready to analyze."]
+    assert [message.value for message in at.info] == ['文件已就绪，点击“运行分析”。']
     assert len(at.dataframe) == 0
     assert len(at.download_button) == 0
     assert at.session_state["pipeline_result"] is None
@@ -867,8 +874,8 @@ def test_group_by_change_invalidates_old_analysis_state() -> None:
 
 def test_group_by_change_can_be_rerun_at_new_grain() -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at.selectbox[0].select("Overall").run()
-    at.button[0].click().run(timeout=20)
+    at.selectbox("analysis_level").select("Overall").run()
+    at.button("run_analysis").click().run(timeout=20)
 
     assert list(at.exception) == []
     assert len(at.dataframe[1].value) == 1
@@ -883,14 +890,14 @@ def test_group_by_change_replaces_sku_workbook_with_overall_workbook() -> None:
     assert sku_workbook["Metrics"].max_row == 13
     assert sku_workbook["Metrics"]["A1"].value == "sku"
 
-    at.selectbox[0].select("Overall").run()
+    at.selectbox("analysis_level").select("Overall").run()
 
     assert at.session_state["excel_bytes"] is None
     assert len(at.download_button) == 0
     assert len(at.dataframe) == 0
-    assert [message.value for message in at.info] == ["Ready to analyze."]
+    assert [message.value for message in at.info] == ['文件已就绪，点击“运行分析”。']
 
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
     overall_workbook = workbook_from_session(at)
     overall_summary = workbook_summary_values(overall_workbook)
 
@@ -907,7 +914,7 @@ def test_success_workbook_is_replaced_by_current_fatal_workbook() -> None:
     success_bytes = at.session_state["excel_bytes"]
     columns = tuple(column for column in REQUIRED_COLUMNS if column != "sku")
 
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         "fatal.csv",
         csv_content(make_row(), columns=columns),
         "text/csv",
@@ -916,7 +923,7 @@ def test_success_workbook_is_replaced_by_current_fatal_workbook() -> None:
     assert at.session_state["excel_bytes"] is None
     assert len(at.download_button) == 0
 
-    at.button[0].click().run(timeout=20)
+    at.button("run_analysis").click().run(timeout=20)
     fatal_workbook = workbook_from_session(at)
     fatal_summary = workbook_summary_values(fatal_workbook)
     validation_sheet = fatal_workbook["Validation Issues"]
@@ -939,8 +946,8 @@ def test_success_workbook_is_replaced_by_current_fatal_workbook() -> None:
         == VALIDATION_FAILED_MESSAGE
     )
     assert len(at.download_button) == 1
-    assert "Metrics" not in [heading.value for heading in at.subheader]
-    assert "Diagnostic Signals" not in [
+    assert '运营指标' not in [heading.value for heading in at.subheader]
+    assert '诊断信号' not in [
         heading.value for heading in at.subheader
     ]
 
@@ -986,8 +993,129 @@ def test_no_diagnostics_ui_uses_explicit_empty_state() -> None:
 
     assert list(at.exception) == []
     assert any(
-        "No diagnostic signals were triggered" in message.value
+        '当前数据未触发演示默认阈值下的诊断信号' in message.value
         for message in at.info
     )
     assert len(at.dataframe) == 1
     assert len(at.download_button) == 1
+
+
+
+def test_chinese_table_headers_and_csv_source_remain_separate() -> None:
+    at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
+    assert list(at.exception) == []
+    result = at.session_state["pipeline_result"]
+    report = at.session_state["report_data"]
+    before = deepcopy(result.diagnostics.to_dict("records"))
+    expected = [
+        report.validation_issues,
+        app.build_metrics_display(result.metrics),
+        app.build_diagnostics_display(result.diagnostics),
+    ]
+    for table, original in zip(at.dataframe, expected):
+        # This Arrow payload supplies the built-in CSV exporter, not Styler text.
+        source = convert_arrow_bytes_to_pandas_df(table.proto.arrow_data.data)
+        expected_source = convert_arrow_bytes_to_pandas_df(convert_pandas_df_to_arrow_bytes(original))
+        pd.testing.assert_frame_equal(source, expected_source)
+        assert list(source.columns) == list(original.columns)
+        assert source.to_csv(index=False) == original.to_csv(index=False)
+        config = json.loads(table.proto.columns)
+        for name in original.columns:
+            expected_label = ui.FIELD_LABELS[name]
+            if name == "code":
+                expected_label = "校验代码" if "level" in original else "诊断代码"
+            assert config[name]["label"] == expected_label
+    validation_display = convert_arrow_bytes_to_pandas_df(
+        at.dataframe[0].proto.arrow_data.styler.display_values
+    )
+    assert set(validation_display["level"]) <= {"致命错误", "错误", "警告"}
+    assert set(at.dataframe[0].value["level"]) <= {"Fatal", "Error", "Warning"}
+    diagnostic_display = convert_arrow_bytes_to_pandas_df(
+        at.dataframe[2].proto.arrow_data.styler.display_values
+    )
+    assert "转化率偏低" in " ".join(diagnostic_display["message"])
+    assert at.dataframe[2].value["evidence"].equals(expected[2]["evidence"])
+    assert json.dumps(result.diagnostics.to_dict("records"), sort_keys=True, default=str) == json.dumps(before, sort_keys=True, default=str)
+    at.run()
+    assert list(at.exception) == []
+    pd.testing.assert_frame_equal(at.session_state["report_data"].validation_issues, expected[0])
+
+
+@pytest.mark.parametrize("option,limit", [
+    ("styler.render.max_elements", 1),
+    ("styler.render.max_rows", 1),
+    ("styler.render.max_columns", 1),
+])
+def test_table_limit_fallback_preserves_every_row_and_csv_value(option: str, limit: int) -> None:
+    with pd.option_context(option, limit):
+        at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
+    assert list(at.exception) == []
+    assert [len(table.value) for table in at.dataframe] == [11, 12, 11]
+    assert "保留原始单元格值" in " ".join(item.value for item in at.caption)
+    assert at.dataframe[0].proto.arrow_data.styler.display_values == b""
+    assert at.dataframe[2].proto.arrow_data.styler.display_values == b""
+    assert json.loads(at.dataframe[2].proto.columns)["message"]["label"] == "说明"
+    assert not any("<table" in item.value for item in at.markdown)
+    pd.testing.assert_frame_equal(at.dataframe[0].value, at.session_state["report_data"].validation_issues)
+
+
+@pytest.mark.parametrize("code", sorted(ui.ERROR_MESSAGES))
+def test_deterministic_error_ui_never_uses_raw_message(code: str) -> None:
+    def render(code: str):
+        import app
+        app._render_error(app.ErrorPresentation(
+            title="File could not be loaded.", code=code,
+            message="SECRET_RAW_EXCEPTION_PROMPT_KEY", stage="loader",
+        ))
+    at = AppTest.from_function(render, args=(code,)).run()
+    assert list(at.exception) == []
+    text = " ".join(item.value for items in (at.error, at.caption, at.markdown) for item in items)
+    assert ui.ERROR_MESSAGES[code] in text
+    assert "SECRET_RAW_EXCEPTION_PROMPT_KEY" not in text
+    assert code in text
+
+
+@pytest.mark.parametrize("code,visible", [("FUTURE_ERROR", True), ("<SECRET_CODE>", False), ("SECRET\nCODE", False)])
+def test_unknown_error_uses_safe_fallback_without_untrusted_title_or_stage(code: str, visible: bool) -> None:
+    def render(code: str):
+        import app
+        app._render_error(app.ErrorPresentation(
+            title="SECRET_TITLE", code=code, message="SECRET_MESSAGE", stage="SECRET_STAGE",
+        ))
+    at = AppTest.from_function(render, args=(code,)).run()
+    assert list(at.exception) == []
+    text = " ".join(item.value for items in (at.error, at.caption, at.markdown) for item in items)
+    assert "未能完成本次分析。" in text
+    for marker in ("SECRET_TITLE", "SECRET_MESSAGE", "SECRET_STAGE"):
+        assert marker not in text
+    assert (code in text) is visible
+
+
+def test_app_owned_keys_are_stable_and_group_display_does_not_change_value() -> None:
+    at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes(), group_label="Overall")
+    assert at.file_uploader("operations_data_upload").label == "运营数据"
+    assert at.selectbox("analysis_level").label == "分析维度"
+    assert at.selectbox("analysis_level").value == "Overall"
+    assert at.selectbox("analysis_level").options[0] == "整体"
+    assert at.button("run_analysis").label == "运行分析"
+    assert at.download_button("download_excel_report").label == "下载 Excel 报表"
+    signature = at.session_state["analysis_signature"]
+    assert signature == app.build_analysis_signature(SAMPLE_PATH.read_bytes(), SAMPLE_PATH.name, None)
+    at.run()
+    assert at.session_state["analysis_signature"] == signature
+
+
+def test_known_old_app_owned_english_phrases_are_absent() -> None:
+    at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
+    text = " ".join(
+        str(item.value) for items in (at.title, at.subheader, at.caption, at.info, at.warning, at.error, at.markdown)
+        for item in items
+    ) + " ".join(button.label for button in at.button)
+    for phrase in (
+        "Upload and configuration", "Run Analysis", "Generate AI Insights", "Raw Rows",
+        "Diagnostic Signals", "Demo Default Thresholds", "Optional interpretation powered",
+        "aggregated group(s)", "validation warning issue(s)",
+    ):
+        assert phrase not in text
+    assert "CrossBorder Ops Radar" in text
+    assert "DeepSeek" in text

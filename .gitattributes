@@ -1,0 +1,3 @@
+# Preserve exact upstream bytes and SHA-256 values across Windows checkouts.
+/assets/deepseek_v4_flash_0731/* -text
+/tests/fixtures/deepseek_v4_flash_0731/* -text

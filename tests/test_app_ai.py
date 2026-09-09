@@ -281,13 +281,13 @@ def upload_and_run(
     group_label: str = "SKU",
 ) -> AppTest:
     at = app_test()
-    at.file_uploader[0].upload(filename, content, "text/csv").run()
-    at.selectbox[0].select(group_label).run()
-    return at.button[0].click().run(timeout=20)
+    at.file_uploader("operations_data_upload").upload(filename, content, "text/csv").run()
+    at.selectbox("analysis_level").select(group_label).run()
+    return at.button("run_analysis").click().run(timeout=20)
 
 
 def click_named_button(at: AppTest, label: str) -> AppTest:
-    button = next(button for button in at.button if button.label == label)
+    button = at.button(label)
     return button.click().run(timeout=20)
 
 
@@ -371,7 +371,7 @@ def test_analysis_never_generates_ai_automatically(ai_harness: AiHarness) -> Non
     assert list(at.exception) == []
     assert at.session_state["pipeline_result"].status is PipelineStatus.SUCCESS
     assert ai_harness.execution_calls == ai_harness.provider_calls == 0
-    assert "Generate AI Insights" in [button.label for button in at.button]
+    assert '生成 AI 洞察' in [button.label for button in at.button]
 
 
 def test_immediate_success_commits_output_v4_and_signature_atomically(
@@ -381,7 +381,7 @@ def test_immediate_success_commits_output_v4_and_signature_atomically(
     ai_harness.success(expected)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     receipt = at.session_state["ai_receipt"]
     assert list(at.exception) == []
@@ -409,7 +409,7 @@ def test_success_binding_is_deterministic_and_sensitive_to_every_input(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     output = at.session_state["ai_output"]
     receipt = at.session_state["ai_receipt"]
     signature = at.session_state["ai_signature"]
@@ -438,7 +438,7 @@ def test_transient_failure_then_success_is_one_execution_two_attempts(
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(recovered))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     receipt = at.session_state["ai_receipt"]
     assert ai_harness.execution_calls == 1
@@ -458,7 +458,7 @@ def test_two_transient_failures_exhaust_attempt_limit(
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.error_code == PROVIDER_TIMEOUT
@@ -479,7 +479,7 @@ def test_permanent_terminal_failure_uses_one_attempt(
     ai_harness.set_steps(ProviderStep(terminal_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     result = state_failure(at).execution_result
     assert result is not None and result.status == FAILED
@@ -493,7 +493,7 @@ def test_rerender_does_not_start_retry_execution_or_provider(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
 
     at.run()
@@ -507,11 +507,11 @@ def test_same_signature_analysis_rerun_does_not_start_ai(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     output = at.session_state["ai_output"]
     receipt = at.session_state["ai_receipt"]
 
-    at = click_named_button(at, "Run Analysis")
+    at = click_named_button(at, "run_analysis")
 
     assert ai_harness.execution_calls == ai_harness.provider_calls == 1
     assert at.session_state["ai_output"] is output
@@ -522,7 +522,7 @@ def test_excel_and_generation_details_render_have_no_ai_side_effect(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     assert len(at.download_button) == 2
 
     at.run()
@@ -536,7 +536,7 @@ def test_receipt_download_serialization_has_no_ai_side_effect(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
 
     first = app.build_receipt_json_bytes(receipt)
@@ -552,14 +552,14 @@ def test_regenerate_success_replaces_the_whole_success_snapshot(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     first_output = at.session_state["ai_output"]
     first_receipt = at.session_state["ai_receipt"]
     first_binding = at.session_state["ai_success_binding"]
     replacement = insight_output(summary="Generation B")
     ai_harness.success(replacement)
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert at.session_state["ai_output"] == replacement
     assert at.session_state["ai_output"] is not first_output
@@ -585,7 +585,7 @@ def test_initial_completed_failure_has_no_partial_success(
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
     excel_bytes = at.session_state["excel_bytes"]
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.execution_result is not None
@@ -596,14 +596,14 @@ def test_initial_completed_failure_has_no_partial_success(
     assert at.session_state["ai_signature"] is None
     assert at.session_state["ai_success_binding"] is None
     assert at.session_state["excel_bytes"] == excel_bytes
-    assert "Download AI Receipt" not in [b.label for b in at.download_button]
+    assert '下载生成凭证（JSON）' not in [b.label for b in at.download_button]
 
 
 def test_regenerate_completed_failure_preserves_prior_success(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     old_output = at.session_state["ai_output"]
     old_receipt = at.session_state["ai_receipt"]
     old_signature = at.session_state["ai_signature"]
@@ -613,7 +613,7 @@ def test_regenerate_completed_failure_preserves_prior_success(
         ProviderStep(timeout_error("second")),
     )
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert at.session_state["ai_output"] is old_output
@@ -623,7 +623,7 @@ def test_regenerate_completed_failure_preserves_prior_success(
     assert failure.execution_result is not None
     assert failure.execution_result.status == FAILED
     assert any(
-        "Showing the previous successful result" in warning.value
+        '当前继续展示上一次成功生成的 AI 洞察' in warning.value
         for warning in at.warning
     )
     assert "first" not in " ".join(rendered_text(at))
@@ -639,15 +639,15 @@ def test_retry_execution_error_without_prior_success_has_unknown_provenance(
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.error_code == INVALID_RETRY_EXECUTION
     assert failure.execution_result is None
     assert at.session_state["ai_output"] is None
     text = " ".join(rendered_text(at))
-    assert "Attempt audit unavailable" in text
-    assert "Provider attempts: 0" not in text
+    assert '详细调用审计不可用' in text
+    assert 'Provider 调用尝试次数：0' not in text
     assert "SECRET_EXECUTION_DETAIL" not in text
 
 
@@ -655,7 +655,7 @@ def test_retry_execution_error_during_regenerate_preserves_success(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     old = (
         at.session_state["ai_output"],
         at.session_state["ai_receipt"],
@@ -667,7 +667,7 @@ def test_retry_execution_error_during_regenerate_preserves_success(
         "SECRET",
     )
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert (
         at.session_state["ai_output"],
@@ -682,7 +682,7 @@ def test_provider_construction_failure_preserves_prior_success(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     old_output = at.session_state["ai_output"]
     old_receipt = at.session_state["ai_receipt"]
     ai_harness.constructor_error = InsightProviderError(
@@ -690,7 +690,7 @@ def test_provider_construction_failure_preserves_prior_success(
         "SECRET_KEY_DETAIL",
     )
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert at.session_state["ai_output"] is old_output
@@ -713,7 +713,7 @@ def test_context_failure_has_no_completed_execution_result(
     monkeypatch.setattr(insights_module, "build_insight_context", fail_context)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.execution_result is None
@@ -732,7 +732,7 @@ def test_initial_receipt_failure_retains_succeeded_execution_without_output(
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.error_code == INVALID_RECEIPT_V4_INPUT
@@ -755,7 +755,7 @@ def test_unexpected_post_execution_failure_keeps_succeeded_result_and_safe_log(
     ai_harness.receipt_error = RuntimeError(marker)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.error_code == "UNEXPECTED_AI_ERROR"
@@ -784,7 +784,7 @@ def test_successful_execution_then_receipt_failure_preserves_old_pair_and_new_au
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     old_output = at.session_state["ai_output"]
     old_receipt = at.session_state["ai_receipt"]
     old_signature = at.session_state["ai_signature"]
@@ -796,7 +796,7 @@ def test_successful_execution_then_receipt_failure_preserves_old_pair_and_new_au
         "SECRET",
     )
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert at.session_state["ai_output"] is old_output
@@ -815,11 +815,11 @@ def test_successful_execution_then_receipt_failure_preserves_old_pair_and_new_au
 def test_new_failure_replaces_previous_failure(ai_harness: AiHarness) -> None:
     ai_harness.set_steps(ProviderStep(terminal_error(PROVIDER_AUTH_FAILED)))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     first = state_failure(at)
     ai_harness.set_steps(ProviderStep(terminal_error(PROVIDER_ACCOUNT_ERROR)))
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     second = state_failure(at)
     assert second is not first
@@ -830,11 +830,11 @@ def test_new_failure_replaces_previous_failure(ai_harness: AiHarness) -> None:
 def test_success_after_failure_clears_failure(ai_harness: AiHarness) -> None:
     ai_harness.set_steps(ProviderStep(terminal_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     assert state_failure(at).execution_result is not None
     ai_harness.success(insight_output(summary="Recovered"))
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert at.session_state["ai_failure"] is None
     assert at.session_state["ai_output"].executive_summary == "Recovered"
@@ -847,13 +847,13 @@ def test_completed_failure_ui_displays_only_audited_counts(
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(timeout_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     text = " ".join(rendered_text(at))
-    assert "Provider attempts: 2" in text
-    assert "Completed retry-delay transitions: 1" in text
-    assert "Retry policy:" in text
-    assert "Delay policy:" in text
+    assert 'Provider 调用尝试次数：2' in text
+    assert '已完成的重试等待衔接次数：1' in text
+    assert '重试策略版本：' in text
+    assert '等待策略版本：' in text
 
 
 def test_receipt_failure_ui_identifies_succeeded_execution(
@@ -865,20 +865,20 @@ def test_receipt_failure_ui_identifies_succeeded_execution(
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     text = " ".join(rendered_text(at))
-    assert "Completed execution status: succeeded" in text
-    assert "Provider execution completed successfully" in text
-    assert "post-execution application processing failed" in text
-    assert "Provider attempts: 1" in text
+    assert '已完成的执行结果状态：成功' in text
+    assert 'Provider 调用已成功完成' in text
+    assert '后续应用处理失败' in text
+    assert 'Provider 调用尝试次数：1' in text
 
 
 def test_v4_download_contains_all_retry_aware_contracts(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     payload = json.loads(
         app.build_receipt_json_bytes(at.session_state["ai_receipt"])
@@ -906,7 +906,7 @@ def test_512_digit_usage_commits_bound_v4_and_strict_json(
     ai_harness.success(usage=usage)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     receipt = at.session_state["ai_receipt"]
     binding = at.session_state["ai_success_binding"]
@@ -928,7 +928,7 @@ def test_legacy_v3_session_pair_is_cleared_not_reconstructed(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     v4 = at.session_state["ai_receipt"]
     at.session_state["ai_receipt"] = make_legacy_v3(v4)
 
@@ -939,7 +939,7 @@ def test_legacy_v3_session_pair_is_cleared_not_reconstructed(
     assert at.session_state["ai_signature"] is None
     assert at.session_state["ai_success_binding"] is None
     assert ai_harness.execution_calls == 1
-    assert "Generate AI Insights" in [button.label for button in at.button]
+    assert '生成 AI 洞察' in [button.label for button in at.button]
 
 
 def test_legacy_error_keys_are_removed_during_initialization(
@@ -981,7 +981,7 @@ def test_incomplete_success_snapshot_fails_closed(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     original = {
         key: at.session_state[key]
         for key in (
@@ -1005,7 +1005,7 @@ def test_incomplete_success_snapshot_fails_closed(
 
 def test_mismatched_receipt_and_output_fail_closed(ai_harness: AiHarness) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     object.__setattr__(receipt, "priority_insight_count", 1)
 
@@ -1023,7 +1023,7 @@ def test_same_shape_output_b_with_receipt_a_fails_binding_closed(
 ) -> None:
     ai_harness.success(insight_output(summary="Generation A"))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt_a = at.session_state["ai_receipt"]
     binding_a = at.session_state["ai_success_binding"]
     output_b = insight_output(summary="Generation B")
@@ -1044,7 +1044,7 @@ def test_output_a_with_compatible_receipt_b_fails_binding_closed(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     output_a = at.session_state["ai_output"]
     receipt_a = at.session_state["ai_receipt"]
     receipt_b = replace(
@@ -1072,7 +1072,7 @@ def test_malformed_or_mismatched_success_binding_fails_closed(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     at.session_state["ai_success_binding"] = malformed_binding
 
     at.run()
@@ -1090,7 +1090,7 @@ def test_success_binding_serialization_failure_is_safe_and_fails_closed(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     marker = "SECRET_BINDING_SERIALIZATION_DETAIL_DO_NOT_LOG"
     caplog.set_level("ERROR")
 
@@ -1123,15 +1123,15 @@ def test_single_attempt_available_cost_has_distinct_truthful_labels(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     text = " ".join(rendered_text(at))
 
     assert receipt.logical_generation_cost.status == FULLY_ESTIMATED
-    assert "Final successful attempt estimated API cost (USD): $" in text
-    assert "Logical-generation estimated total (USD): $" in text
-    assert "Estimated total API cost" not in text
-    assert "not the provider's final billed amount" in text
+    assert '最终成功调用估算成本（USD）：$' in text
+    assert '本次逻辑生成估算总成本（USD）：$' in text
+    assert '总 API 成本' not in text
+    assert '不代表 Provider 最终账单' in text
 
 
 def test_single_attempt_unavailable_cost_does_not_render_zero(
@@ -1139,16 +1139,16 @@ def test_single_attempt_unavailable_cost_does_not_render_zero(
 ) -> None:
     ai_harness.success(usage=None)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     text = " ".join(rendered_text(at))
 
     assert receipt.cost.status == "unavailable"
     assert receipt.cost.unavailable_reason == USAGE_UNAVAILABLE
     assert receipt.logical_generation_cost.status == LOGICAL_COST_UNAVAILABLE
-    assert "Final successful attempt cost estimate unavailable" in text
-    assert "Logical-generation total estimate unavailable" in text
-    assert "Logical-generation estimated total (USD): $0" not in text
+    assert '最终成功调用的成本估算不可用' in text
+    assert '无法估算本次逻辑生成总成本' in text
+    assert '本次逻辑生成估算总成本（USD）：$0' not in text
 
 
 def test_single_attempt_missing_cache_breakdown_is_unavailable(
@@ -1157,11 +1157,11 @@ def test_single_attempt_missing_cache_breakdown_is_unavailable(
     usage = ProviderUsage(prompt_tokens=100, completion_tokens=20, total_tokens=120)
     ai_harness.success(usage=usage)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
 
     assert receipt.cost.unavailable_reason == CACHE_BREAKDOWN_UNAVAILABLE
-    assert "Cache hit/miss breakdown unavailable" in " ".join(rendered_text(at))
+    assert '输入缓存命中与未命中明细不可用' in " ".join(rendered_text(at))
 
 
 def test_multi_attempt_available_final_cost_never_becomes_total(
@@ -1169,15 +1169,15 @@ def test_multi_attempt_available_final_cost_never_becomes_total(
 ) -> None:
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(insight_output()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     text = " ".join(rendered_text(at))
 
     assert receipt.cost.status == "available"
     assert receipt.logical_generation_cost.status == UNKNOWN_TOTAL
-    assert "Final successful attempt estimated API cost (USD): $" in text
-    assert "Logical-generation total spend is unknown" in text
-    assert "Estimated total API cost" not in text
+    assert '最终成功调用估算成本（USD）：$' in text
+    assert '本次逻辑生成总成本未知' in text
+    assert '总 API 成本' not in text
 
 
 def test_multi_attempt_unavailable_final_cost_still_has_unknown_total(
@@ -1188,15 +1188,15 @@ def test_multi_attempt_unavailable_final_cost_still_has_unknown_total(
         ProviderStep(insight_output(), usage=None),
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     text = " ".join(rendered_text(at))
 
     assert receipt.cost.status == "unavailable"
     assert receipt.logical_generation_cost.status == UNKNOWN_TOTAL
-    assert "Final successful attempt cost estimate unavailable" in text
-    assert "Logical-generation total spend is unknown" in text
-    assert "Logical-generation total estimate unavailable because" not in text
+    assert '最终成功调用的成本估算不可用' in text
+    assert '本次逻辑生成总成本未知' in text
+    assert '因此无法估算本次逻辑生成总成本' not in text
 
 
 def test_requested_delay_ui_uses_exact_milliseconds_not_elapsed_claim(
@@ -1206,20 +1206,20 @@ def test_requested_delay_ui_uses_exact_milliseconds_not_elapsed_claim(
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(insight_output()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     text = " ".join(rendered_text(at))
     assert ai_harness.sleep_calls == [2500]
-    assert "2,500 ms requested" in text
-    assert "actual wait" not in text.lower()
-    assert "elapsed" not in text.lower()
+    assert '请求等待 2,500 ms' in text
+    assert '实际等待' not in text.lower()
+    assert '实际耗时' not in text.lower()
 
 
 def test_receipt_time_is_utc_and_captured_after_execution(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     parsed = datetime.fromisoformat(receipt.generated_at)
 
@@ -1235,12 +1235,12 @@ def test_different_analysis_clears_success_and_failure(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     ai_harness.set_steps(ProviderStep(terminal_error()))
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     assert at.session_state["ai_failure"] is not None
 
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         "different.csv",
         csv_content(make_row(sku="DIFFERENT")),
         "text/csv",
@@ -1261,18 +1261,18 @@ def test_each_analysis_identity_change_invalidates_ai_state(
 ) -> None:
     content = SAMPLE_PATH.read_bytes()
     at = upload_and_run(SAMPLE_PATH.name, content)
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     if change == "filename":
-        at.file_uploader[0].upload("renamed.csv", content, "text/csv").run()
+        at.file_uploader("operations_data_upload").upload("renamed.csv", content, "text/csv").run()
     elif change == "bytes":
-        at.file_uploader[0].upload(
+        at.file_uploader("operations_data_upload").upload(
             SAMPLE_PATH.name,
             csv_content(make_row(sku="CHANGED")),
             "text/csv",
         ).run()
     else:
-        at.selectbox[0].select("Overall").run()
+        at.selectbox("analysis_level").select("Overall").run()
 
     assert at.session_state["ai_output"] is None
     assert at.session_state["ai_receipt"] is None
@@ -1287,10 +1287,10 @@ def test_analysis_a_to_b_to_a_does_not_restore_old_success_or_binding(
 ) -> None:
     content_a = SAMPLE_PATH.read_bytes()
     at = upload_and_run(SAMPLE_PATH.name, content_a)
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     old_binding = at.session_state["ai_success_binding"]
 
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         "analysis-b.csv",
         csv_content(make_row(sku="ANALYSIS-B")),
         "text/csv",
@@ -1300,7 +1300,7 @@ def test_analysis_a_to_b_to_a_does_not_restore_old_success_or_binding(
     assert at.session_state["ai_signature"] is None
     assert at.session_state["ai_success_binding"] is None
 
-    at.file_uploader[0].upload(
+    at.file_uploader("operations_data_upload").upload(
         SAMPLE_PATH.name,
         content_a,
         "text/csv",
@@ -1334,7 +1334,7 @@ def test_session_stores_only_canonical_ai_state_not_provider_or_raw_text(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     keys = set(at.session_state.filtered_state)
 
     assert {
@@ -1363,7 +1363,7 @@ def test_receipt_json_contract_is_private_and_strict(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     payload_bytes = app.build_receipt_json_bytes(at.session_state["ai_receipt"])
     payload = json.loads(payload_bytes)
     text = payload_bytes.decode("utf-8")
@@ -1378,27 +1378,27 @@ def test_receipt_json_contract_is_private_and_strict(
 @pytest.mark.parametrize(
     ("code", "message_fragment"),
     [
-        (PROVIDER_CONFIGURATION_ERROR, "not configured"),
-        (PROVIDER_AUTH_FAILED, "authentication failed"),
-        (PROVIDER_ACCOUNT_ERROR, "account cannot"),
-        (PROVIDER_TIMEOUT, "timed out"),
-        (PROVIDER_RATE_LIMITED, "rate limited"),
-        (PROVIDER_CONNECTION_FAILED, "Could not connect"),
-        (PROVIDER_UNAVAILABLE, "temporarily unavailable"),
-        (PROVIDER_REQUEST_REJECTED, "rejected the request"),
-        (PROVIDER_FAILURE, "could not complete"),
-        (INVALID_PROVIDER, "safely accepted"),
-        (INVALID_PROVIDER_RESPONSE, "safely accepted"),
-        (INVALID_PROVIDER_JSON, "safely accepted"),
-        (INVALID_PROVIDER_USAGE, "metadata that could not be safely accepted"),
-        ("INVALID_INSIGHT_OUTPUT", "safely accepted"),
-        ("OUTPUT_TOO_LARGE", "safely accepted"),
-        ("INVALID_INSIGHT_INPUT", "could not be prepared"),
-        ("INSIGHT_CONTEXT_TOO_LARGE", "too large"),
-        (INVALID_RETRY_EXECUTION, "retry execution"),
-        (INVALID_RECEIPT_V4_INPUT, "valid generation details"),
-        ("INVALID_LOGICAL_GENERATION_COST", "safely recorded"),
-        ("UNKNOWN_CODE", "unexpected error"),
+        (PROVIDER_CONFIGURATION_ERROR, '尚未配置'),
+        (PROVIDER_AUTH_FAILED, '身份验证失败'),
+        (PROVIDER_ACCOUNT_ERROR, '账户无法'),
+        (PROVIDER_TIMEOUT, '请求超时'),
+        (PROVIDER_RATE_LIMITED, '请求频率限制'),
+        (PROVIDER_CONNECTION_FAILED, '无法连接'),
+        (PROVIDER_UNAVAILABLE, '暂时不可用'),
+        (PROVIDER_REQUEST_REJECTED, '拒绝了本次请求'),
+        (PROVIDER_FAILURE, '未能完成'),
+        (INVALID_PROVIDER, '安全校验'),
+        (INVALID_PROVIDER_RESPONSE, '安全校验'),
+        (INVALID_PROVIDER_JSON, '安全校验'),
+        (INVALID_PROVIDER_USAGE, '用量元数据未通过安全校验'),
+        ("INVALID_INSIGHT_OUTPUT", '安全校验'),
+        ("OUTPUT_TOO_LARGE", '安全校验'),
+        ("INVALID_INSIGHT_INPUT", '无法将当前分析准备'),
+        ("INSIGHT_CONTEXT_TOO_LARGE", '超出 AI 输入大小限制'),
+        (INVALID_RETRY_EXECUTION, '重试执行'),
+        (INVALID_RECEIPT_V4_INPUT, '有效的生成凭证'),
+        ("INVALID_LOGICAL_GENERATION_COST", '安全记录'),
+        ("UNKNOWN_CODE", '意外错误'),
     ],
 )
 def test_ai_error_codes_map_to_safe_product_messages(
@@ -1427,7 +1427,7 @@ def test_receipt_download_filename_is_short_and_path_safe(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     object.__setattr__(receipt, "analysis_signature", analysis_signature)
 
@@ -1452,13 +1452,13 @@ def test_ai_output_rendering_supports_scopes_and_optional_sections(
     ai_harness.success(insight_output(priorities=(priority,)))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     text = " ".join(rendered_text(at))
     assert "Observed low conversion" in text
-    assert "Possible explanations (hypotheses)" in text
-    assert "Recommended checks (investigations)" in text
-    assert "Confidence: Medium" in text
+    assert '可能原因（假设）' in text
+    assert '建议核查' in text
+    assert '置信度：中' in text
 
 
 def test_empty_priority_output_is_a_valid_renderable_success(
@@ -1466,10 +1466,10 @@ def test_empty_priority_output_is_a_valid_renderable_success(
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert at.session_state["ai_output"].priority_insights == ()
-    assert "No priority insight was produced" in " ".join(rendered_text(at))
+    assert '本次分析未生成重点洞察' in " ".join(rendered_text(at))
     assert isinstance(at.session_state["ai_receipt"], InsightGenerationReceiptV4)
 
 
@@ -1498,7 +1498,7 @@ def test_empty_success_or_no_diagnostics_still_allows_explicit_generation(
 ) -> None:
     at = upload_and_run("edge.csv", content)
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.execution_calls == 1
     assert ai_harness.provider_calls == 1
@@ -1510,7 +1510,7 @@ def test_validation_failed_never_exposes_ai_action(ai_harness: AiHarness) -> Non
     at = upload_and_run("fatal.csv", malformed)
 
     assert at.session_state["pipeline_result"].status is PipelineStatus.VALIDATION_FAILED
-    assert "AI Insights" not in [heading.value for heading in at.subheader]
+    assert 'AI 洞察' not in [heading.value for heading in at.subheader]
     assert ai_harness.execution_calls == 0
     assert ai_harness.provider_calls == 0
 
@@ -1524,7 +1524,7 @@ def test_unexpected_execution_exception_is_sanitized(
     ai_harness.execution_error = RuntimeError(marker)
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure = state_failure(at)
     assert failure.error_code == "UNEXPECTED_AI_ERROR"
@@ -1551,7 +1551,7 @@ def test_generation_details_exception_is_sanitized_without_state_loss(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     output = at.session_state["ai_output"]
     receipt = at.session_state["ai_receipt"]
     signature = at.session_state["ai_signature"]
@@ -1611,7 +1611,7 @@ def test_invalid_failure_object_is_cleared_without_crashing(
         "hidden",
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     failure = state_failure(at)
     object.__setattr__(failure, "execution_result", object())
 
@@ -1626,7 +1626,7 @@ def test_failure_signature_mismatch_is_cleared_without_touching_success(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     output = at.session_state["ai_output"]
     receipt = at.session_state["ai_receipt"]
     at.session_state["ai_failure"] = app.AiGenerationFailure(
@@ -1648,7 +1648,7 @@ def test_failure_code_must_match_failed_execution_result(
 ) -> None:
     ai_harness.set_steps(ProviderStep(terminal_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     failure = state_failure(at)
     object.__setattr__(failure, "error_code", PROVIDER_ACCOUNT_ERROR)
 
@@ -1679,7 +1679,7 @@ def test_succeeded_execution_accepts_only_real_post_execution_failure_codes(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     result = ai_harness.completed_results[-1]  # type: ignore[index]
     at.session_state["ai_failure"] = app.AiGenerationFailure(
         signature=at.session_state["ai_signature"],
@@ -1692,7 +1692,7 @@ def test_succeeded_execution_accepts_only_real_post_execution_failure_codes(
     failure = state_failure(at)
     assert failure.error_code == error_code
     assert failure.execution_result is result
-    assert "Provider execution completed successfully" in " ".join(
+    assert 'Provider 调用已成功完成' in " ".join(
         rendered_text(at)
     )
     assert ai_harness.execution_calls == 1
@@ -1722,7 +1722,7 @@ def test_succeeded_execution_rejects_provider_or_execution_failure_codes(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     success_snapshot = (
         at.session_state["ai_output"],
         at.session_state["ai_receipt"],
@@ -1752,7 +1752,7 @@ def test_failure_with_invalid_execution_status_is_cleared(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     result = ai_harness.completed_results[-1]  # type: ignore[index]
     object.__setattr__(result, "status", "invalid")
     at.session_state["ai_failure"] = app.AiGenerationFailure(
@@ -1773,7 +1773,7 @@ def test_one_explicit_operation_invokes_retry_execution_exactly_once(
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(insight_output()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.execution_calls == 1
     assert ai_harness.provider_calls == 2
@@ -1785,9 +1785,9 @@ def test_provider_call_count_equals_attempt_count_for_every_completed_operation(
 ) -> None:
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(insight_output()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     ai_harness.set_steps(ProviderStep(terminal_error()))
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.completed_results is not None
     audited_attempts = sum(
@@ -1803,7 +1803,7 @@ def test_completed_results_have_n_minus_one_delay_records(
 ) -> None:
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(insight_output()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    click_named_button(at, "Generate AI Insights")
+    click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.completed_results is not None
     for result in ai_harness.completed_results:
@@ -1819,7 +1819,7 @@ def test_app_does_not_expose_old_direct_generation_symbols() -> None:
 
 def test_receipt_json_rejects_legacy_v3(ai_harness: AiHarness) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     legacy = make_legacy_v3(at.session_state["ai_receipt"])
 
     with pytest.raises(TypeError, match="InsightGenerationReceiptV4"):
@@ -1831,7 +1831,7 @@ def test_same_signature_failure_rerender_preserves_failure_without_new_call(
 ) -> None:
     ai_harness.set_steps(ProviderStep(terminal_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     failure = at.session_state["ai_failure"]
 
     at.run()
@@ -1845,12 +1845,12 @@ def test_failure_does_not_attach_audit_to_prior_receipt(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     original_audit = receipt.attempt_audit
     ai_harness.set_steps(ProviderStep(terminal_error()))
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     failure_result = state_failure(at).execution_result
     assert failure_result is not None
@@ -1863,7 +1863,7 @@ def test_receipt_builder_receives_sealed_execution_facts_without_app_overrides(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     result = ai_harness.completed_results[0]  # type: ignore[index]
 
@@ -1880,7 +1880,7 @@ def test_failure_state_has_no_duplicate_message_or_audit_keys(
 ) -> None:
     ai_harness.set_steps(ProviderStep(terminal_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     state = at.session_state.filtered_state
 
     assert type(state["ai_failure"]).__name__ == "AiGenerationFailure"
@@ -1897,7 +1897,7 @@ def test_provider_error_details_never_enter_failure_object(
     secret = "SECRET_HTTP_BODY_AND_KEY"
     ai_harness.set_steps(ProviderStep(terminal_error(detail=secret)))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     failure = state_failure(at)
 
     assert secret not in failure.error_code
@@ -1909,7 +1909,7 @@ def test_retry_execution_result_is_not_persisted_on_success(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     state = at.session_state.filtered_state
     assert state["ai_failure"] is None
@@ -1924,7 +1924,7 @@ def test_receipt_generated_at_is_not_attempt_pricing_reference(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
 
     assert receipt.generated_at not in {
@@ -1940,7 +1940,7 @@ def test_receipt_group_by_matches_current_analysis_scope(
         SAMPLE_PATH.read_bytes(),
         group_label="Marketplace + Country",
     )
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert at.session_state["ai_receipt"].group_by == (
         "marketplace",
@@ -1954,7 +1954,7 @@ def test_overall_receipt_uses_empty_group_tuple(ai_harness: AiHarness) -> None:
         SAMPLE_PATH.read_bytes(),
         group_label="Overall",
     )
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert at.session_state["ai_receipt"].group_by == ()
 
@@ -1965,7 +1965,7 @@ def test_failed_logical_generation_never_calls_receipt_builder(
     ai_harness.set_steps(ProviderStep(terminal_error()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    click_named_button(at, "Generate AI Insights")
+    click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.receipt_calls == 0
     assert ai_harness.execution_calls == 1
@@ -1981,7 +1981,7 @@ def test_retry_execution_error_never_calls_receipt_builder(
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    click_named_button(at, "Generate AI Insights")
+    click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.receipt_calls == 0
     assert ai_harness.provider_calls == 0
@@ -1997,7 +1997,7 @@ def test_receipt_failure_keeps_completed_attempt_and_delay_provenance(
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     result = state_failure(at).execution_result
     assert result is not None and result.status == SUCCEEDED
@@ -2012,14 +2012,14 @@ def test_regenerate_failure_keeps_receipt_download_for_prior_success(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     prior_receipt = at.session_state["ai_receipt"]
     ai_harness.set_steps(ProviderStep(terminal_error()))
 
-    at = click_named_button(at, "Regenerate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert at.session_state["ai_receipt"] is prior_receipt
-    assert "Download AI Receipt" in [b.label for b in at.download_button]
+    assert '下载生成凭证（JSON）' in [b.label for b in at.download_button]
     payload = json.loads(app.build_receipt_json_bytes(prior_receipt))
     assert payload["analysis_signature"] == prior_receipt.analysis_signature
 
@@ -2032,10 +2032,10 @@ def test_failure_ui_uses_code_derived_message_not_persisted_message(
         ProviderStep(terminal_error(PROVIDER_RATE_LIMITED)),
     )
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
 
     assert state_failure(at).error_code == PROVIDER_RATE_LIMITED
-    assert "temporarily rate limited" in " ".join(rendered_text(at))
+    assert '暂时受到请求频率限制' in " ".join(rendered_text(at))
     assert "ai_error_message" not in at.session_state.filtered_state
 
 
@@ -2043,7 +2043,7 @@ def test_success_pair_validation_preserves_valid_v4_on_passive_render(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     snapshot = (
         at.session_state["ai_output"],
         at.session_state["ai_receipt"],
@@ -2076,7 +2076,7 @@ def test_receipt_filename_uses_analysis_identity_only(
     ai_harness: AiHarness,
 ) -> None:
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
-    at = click_named_button(at, "Generate AI Insights")
+    at = click_named_button(at, "generate_ai_insights")
     receipt = at.session_state["ai_receipt"]
     expected = app.build_receipt_download_filename(receipt)
     object.__setattr__(receipt, "model", "different-model")
@@ -2088,8 +2088,66 @@ def test_no_real_sleep_is_used_by_test_harness(ai_harness: AiHarness) -> None:
     ai_harness.set_steps(ProviderStep(timeout_error()), ProviderStep(insight_output()))
     at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
 
-    click_named_button(at, "Generate AI Insights")
+    click_named_button(at, "generate_ai_insights")
 
     assert ai_harness.sleep_calls == [1000]
     assert ai_harness.events is not None
     assert "sleep:1000" in ai_harness.events
+
+
+
+def test_label_change_preserves_widget_identity_output_receipt_and_binding(
+    ai_harness: AiHarness, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import ui_text as ui
+    expected = insight_output(summary="English artifact: do not translate this text.")
+    ai_harness.success(expected)
+    at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
+    assert at.button("generate_ai_insights").label == "生成 AI 洞察"
+    at = click_named_button(at, "generate_ai_insights")
+    assert at.button("generate_ai_insights").label == "重新生成 AI 洞察"
+    assert at.download_button("download_ai_receipt").label == "下载生成凭证（JSON）"
+    before = tuple(at.session_state[key] for key in (
+        "ai_output", "ai_receipt", "ai_signature", "ai_success_binding",
+    ))
+    receipt_bytes = app.build_receipt_json_bytes(before[1])
+    widget_ids = (
+        at.button("generate_ai_insights").proto.id,
+        at.download_button("download_ai_receipt").proto.id,
+    )
+    calls = (ai_harness.provider_calls, ai_harness.execution_calls, ai_harness.receipt_calls)
+    monkeypatch.setitem(ui.TEXT, "regenerate", "再次生成 AI 洞察")
+    monkeypatch.setitem(ui.TEXT, "download_receipt", "下载本次生成凭证（JSON）")
+    at.run()
+    assert list(at.exception) == []
+    assert widget_ids == (
+        at.button("generate_ai_insights").proto.id,
+        at.download_button("download_ai_receipt").proto.id,
+    )
+    assert before == tuple(at.session_state[key] for key in (
+        "ai_output", "ai_receipt", "ai_signature", "ai_success_binding",
+    ))
+    assert app.build_receipt_json_bytes(at.session_state["ai_receipt"]) == receipt_bytes
+    assert at.session_state["ai_output"].to_dict() == expected.to_dict()
+    assert expected.executive_summary in " ".join(rendered_text(at))
+    assert calls == (ai_harness.provider_calls, ai_harness.execution_calls, ai_harness.receipt_calls)
+
+
+def test_success_audit_uses_chinese_labels_without_rewriting_english_artifact(
+    ai_harness: AiHarness,
+) -> None:
+    at = upload_and_run(SAMPLE_PATH.name, SAMPLE_PATH.read_bytes())
+    at = click_named_button(at, "generate_ai_insights")
+    text = " ".join(rendered_text(at))
+    for phrase in (
+        "Executive Summary", "Priority Insights", "Token Usage", "Prompt tokens:",
+        "Completion tokens:", "Cost Estimate", "Retry Provenance", "Pricing reference:",
+        "Generated at", "Analysis ID", "Final successful attempt", "Logical-generation",
+    ):
+        assert phrase not in text
+    assert "运营摘要" in text
+    assert "Provider 报告的 Token 用量" in text
+    assert "上下文版本 v1" in text
+    assert "Validated AI summary." in text
+    assert "local_encoded_input_tokens" not in text
+    assert ai_harness.provider_calls == ai_harness.execution_calls == 1

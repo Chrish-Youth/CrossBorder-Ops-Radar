@@ -1,6 +1,98 @@
 # CrossBorder Ops Radar
 
-CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营数据分析 Demo。项目计划接收 CSV/XLSX 日汇总数据，完成数据质量检查、SKU 指标计算、规则化异常诊断，并生成中文运营报表。
+## 项目简介
+
+一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营分析项目。上传 CSV/XLSX 每日运营数据，即可完成数据校验、指标计算、规则诊断和 Excel 报表导出；成功分析后，可显式请求 DeepSeek 生成 AI 洞察。
+
+当前应用界面为中文优先；AI 洞察正文的生成语言仍由既有 Prompt/模型行为决定，Phase 8.20 不修改生成正文。品牌名、业务值和技术标识保持原样。
+
+## 解决的问题
+
+运营数据容易出现缺列、格式错误、重复记录和统计口径混淆。项目先检查数据，再按固定口径计算指标、标记需要核查的诊断信号，减少手工整理和逐行排查。
+
+## 核心设计原则
+
+- 确定性计算独立于 AI：数据校验、指标、诊断和报表不依赖大模型。
+- 证据可核查：诊断展示实际值、阈值与判断依据；演示默认阈值不代表行业标准。
+- AI 仅解释已有事实：观察、可能原因和核查建议分开呈现，不把假设当成结论。
+- 展示与契约分离：`内部稳定值 → 受控中文映射 → 界面`；英文 Schema、签名与审计记录不变。
+
+## 主要功能
+
+| 功能 | 使用方式 |
+| --- | --- |
+| 数据校验 | 查看有效行、排除行、警告行及问题明细 |
+| 运营指标 | 按整体、SKU、平台、国家/地区或日期组合聚合 |
+| 诊断信号 | 查看点击、转化、广告投入产出、退款和库存相关信号 |
+| AI 洞察 | 点击“生成 AI 洞察”或“重新生成 AI 洞察” |
+| 生成详情 | 查看 Provider 用量、成本估算及调用与重试记录 |
+| 下载 | 导出 Excel 报表、生成凭证（JSON），或使用表格内置 CSV 下载 |
+
+八项指标为：点击率（CTR）、转化率（CVR）、平均订单金额（AOV）、单次点击成本（CPC）、单笔订单广告成本（CPA）、广告投入产出比（ROAS）、退款率（Refund Rate）、商品交易总额（GMV）。CPA 按 `ad_spend / orders` 计算，不代表新客获客成本。缺失指标显示 `—`；金额保持 USD，不进行汇率换算。
+
+## 快速启动
+
+在项目目录运行 PowerShell：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe -m streamlit run app.py
+```
+
+确定性分析无需 API key。使用 AI 功能时，需提前在运行环境中配置 `DEEPSEEK_API_KEY`，不要把真实密钥提交到仓库。启动、上传、普通分析和下载均不会自动请求 AI。
+
+## Demo 操作流程
+
+1. 上传 `data/sample_ecommerce_data.csv`，选择分析维度，点击“运行分析”。
+2. 先查看“数据校验”，再看“运营指标”和“诊断信号”。
+3. 查看具体信号的实际值、阈值与判断依据，确认需要核查的业务环节。
+4. 如已配置 Provider，可点击“生成 AI 洞察”；此操作可能产生实际 API 费用。
+5. 展开“生成详情”，区分最终成功调用估算成本与本次逻辑生成总成本，然后按需下载报表或凭证。
+
+工作区已有演示文件：`data/demo/interview_success.xlsx`、`data/demo/interview_quality_issues.xlsx`、`data/demo/interview_fatal_missing_country.xlsx`。它们属于已有演示内容，Phase 8.20 不修改其文件名、工作表或业务值。
+
+## 系统架构
+
+```text
+上传文件（CSV / XLSX）
+  → 加载（Loader）→ 数据校验（Validator）
+  → 指标计算（Metrics）→ 诊断（Diagnostics）→ PipelineResult
+       ├─ 报表模型（ReportData）→ Excel 文件
+       └─ 显式点击生成 AI 洞察
+            → 上下文（InsightContext）→ 重试执行（Retry Execution V2）
+            → Provider 调用 → 输出校验（InsightOutput）
+            → 生成凭证（Receipt V4）+ 成本及调用审计
+            → 成功绑定校验 → 中文展示标签 + 原始 AI 正文
+```
+
+## AI 可靠性设计
+
+一次显式生成启动一次逻辑生成，可在固定调用预算内包含多次 Provider 调用尝试。重试由应用执行；DeepSeek SDK 保持 `max_retries=0`。
+
+- 成功时原子保存 `ai_output`、`ai_receipt`、`ai_signature`、`ai_success_binding`。
+- 重新生成失败时继续展示上一次成功洞察与凭证，本次失败记录独立保存。
+- 未返回完整执行结果时显示“详细调用审计不可用”，不能推断调用次数为 0。
+- Provider 已成功但凭证等后续处理失败，会明确区分调用成功与应用后处理失败。
+- 先前失败调用成本未知时，`unknown_total` 表示逻辑生成总成本未知，不能用最终成功调用成本代替。
+- 成本根据 Provider 用量和保存的定价快照估算，不代表 Provider 最终账单。
+- 重试记录中的毫秒数是请求等待时间，不是测得的实际耗时。
+
+Phase 8.19 本地 Token Measurement 基础模块已 SEALED，官方基线为 **1832 passed**；尚未接入 App。Phase 8.20 不添加 Token 展示、预算门禁或测量调用。保证中文 AI 正文属于独立的 Phase 8.20.1 Prompt 语言契约工作。
+
+## 数据与导出契约
+
+正式 Excel 保持 `Summary`、`Validation Issues`、`Metrics`、`Diagnostics` 四个英文工作表，以及原字段、状态、代码和消息。Receipt JSON 保持 V4 英文键和精确序列化；所有下载文件名保持既有规则。本阶段不提供中文版正式 Excel 或翻译版生成凭证。
+
+表格通过 `column_config` 显示中文列名；受控单元格文案通过只读展示格式映射，CSV 使用的原始列名和值不变。超过 Styler 显示上限时回退为中文表头及原始单元格值，保留全部数据行。
+
+Streamlit 自有上传器、搜索及 CSV 工具栏仍可能显示英文，本阶段只中文化应用自有展示内容。新会话使用固定 widget key；已有页面热更新后可能需要重新上传文件，不提供旧控件身份迁移，也不会因此自动调用 AI。
+
+## 详细阶段 / Contract 历史
+
+以下保留历史设计与契约记录；其中各阶段描述反映当时实现状态。当前中文展示边界以上述说明为准。
+
+CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨境电商运营数据分析 Demo。项目计划接收 CSV/XLSX 日汇总数据，完成数据质量检查、SKU 指标计算、规则化异常诊断，并生成保持英文 Schema 的 Excel 运营报表。
 
 核心运营计算与报表链路不依赖任何大模型。确定性分析完成后可由用户显式请求 DeepSeek AI 解读；Phase 8.10 已把离线、版本化定价快照派生的 Cost Audit Metadata 原子写入 Receipt V3，Phase 8.11 进一步加入 immutable Pricing Policy Catalog 与人工核验的更新工作流，Phase 8.12/8.12.1 建立并加固 deterministic Retry eligibility contract，Phase 8.13 冻结 multi-attempt provenance contract，Phase 8.14–8.16 完成 audited Retry Execution V2 与 requested-delay provenance，Phase 8.17/8.17.1 冻结 Receipt V4 与 logical-generation Cost truthfulness contract，Phase 8.18 把 Streamlit 生产路径迁移到 Retry Execution V2 与 Receipt V4，Phase 8.18.1 再以 App-local success binding、failure consistency allowlist 和脱敏日志完成封板前加固。一次显式 Generate/Regenerate 仍只启动一次 logical generation，但该 logical generation 可在固定 attempt budget 内产生多次 Provider invocation；DeepSeek SDK 自身继续固定 `max_retries=0`。历史 Policy 与 Receipt 不会因 Catalog 后续新增版本而被改写，成本计算不发起网络请求，也不代表 Provider 最终账单。项目仍不使用数据库，也不包含登录或权限系统。
 
@@ -48,7 +140,9 @@ CrossBorder Ops Radar 是一个使用 Python、Pandas 和 Streamlit 构建的跨
 - Phase 8.17 Receipt V4 / Logical-Generation Cost Truthfulness Core completed：Receipt V4 可保存完整 Attempt/Delay provenance，并把最终成功 Attempt estimate 与整个 logical generation 的总 Provider spend 语义明确分离。
 - Phase 8.18 Streamlit Retry Activation + Receipt V4 Migration completed：显式 AI 操作已由 Retry Execution V2 唯一执行，成功结果原子提交 Receipt V4，失败操作以独立 provenance 保存并保留既有成功快照。
 - Phase 8.18.1 App Integrity Hardening completed：成功快照增加 versioned App-local SHA-256 binding，succeeded-result failure code 使用 closed post-execution allowlist，AI unexpected exception 日志只保留安全 stage 与异常类型。
-- Next phase not started：token-aware budgeting、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账均未实现。
+- Phase 8.19 Official Token Measurement Foundation SEALED（官方基线：1832 passed）：独立本地测量已固定官方资产、runtime 和 system/user chat 编码范围，尚未接入 App。
+- Phase 8.20 Chinese Presentation Layer SEALED（官方基线：1907 passed）：应用展示中文优先；内部英文契约、正式导出、AI 正文及调用审计保持不变。Phase 8.20.1 中文洞察生成语言契约已完成实施前评审，尚未实现。
+- 后续能力未实现：token admission、第二 Provider、Provider Selection、完整 AI audit package/export 与实际账单对账；当前 token admission 经可行性审核判定为冗余，不属于 Phase 8.19。
 
 当前已实现的数据流为：
 
@@ -118,7 +212,7 @@ PipelineResult
 - 检查字段、类型、取值、记录关系和重复冲突等数据质量问题。
 - 按 SKU 汇总固定口径的运营指标。
 - 使用透明、可配置的规则识别经营异常。
-- 在页面展示结果并生成可下载的中文 Excel 运营报表。
+- 在页面展示结果并生成可下载的 Excel 运营报表（正式导出 Schema 保持英文）。
 
 SKU 指标聚合已在 Phase 3 实现，确定性规则诊断已在 Phase 4 实现，统一业务入口已在 Phase 5 实现，Report Model 与 Excel 导出已在 Phase 6 实现，并已在 Phase 6.1 完成完整性加固；Phase 7 已提供可直接使用的 Streamlit 单页应用。Phase 8.1/8.1.1 已提供并加固 Structured Insight Context，Phase 8.2/8.2.1 已冻结并加固 Prompt 与预期 LLM Output 契约，Phase 8.3/8.3.1 已提供并加固完全离线的 Provider 抽象和 Mock 调用链，Phase 8.4 新增可选 DeepSeek transport adapter。真实 DeepSeek Provider 已作为显式、可选的 AI Insights 路径接入 Streamlit UI，并且不影响确定性的运营分析主链路。
 
@@ -1921,6 +2015,129 @@ Excel 仍受 Phase 6.1 契约约束：单元格文本最多 32,767 字符；表�
 
 应用不展示 Raw/Clean Data，不提供 Threshold Editor、Charts、Dashboard Visualization、Chat、Root Cause Engine、自动执行运营动作、账号、数据库或历史报告。AI Output 不进入 Excel；确定性 Workbook Contract 保持不变。
 
+## Phase 8.19：官方本地 Token Measurement Foundation
+
+`src/insight_token_measurement.py` 提供独立 API：
+
+```python
+from src.insight_token_measurement import measure_insight_prompt_tokens
+
+# prompt 是既有 build_insight_prompt(context) 返回的 InsightPrompt。
+measurement = measure_insight_prompt_tokens(prompt)
+local_count = measurement.local_encoded_input_tokens
+```
+
+`TOKEN_MEASUREMENT_VERSION = "1"`；`LocalTokenMeasurement` 与
+`TokenMeasurementAssetIdentity` 均为 frozen dataclass，不提供持久化/导出接口。
+结果包含 measurement `version`、目标 `provider="deepseek"`、
+`model="deepseek-v4-flash"`、`encoding_mode="chat"`、三个非负整数、
+不可变 `asset_identity` 及 `runtime_name="tokenizers"` / `runtime_version="0.22.2"`。
+整数必须是 exact int，拒绝 bool、负数、float、unknown→0 和隐式转换；
+没有 Receipt/Attempt 的 512 位 JSON 持久化限制。
+
+| 字段 | 精确含义 |
+| --- | --- |
+| `local_encoded_input_tokens` | 固定官方 reference encoder 的完整输出，经固定本地 tokenizer 编码后得到的 token ID 数量，即“本地编码输入 token 数” |
+| `prompt_body_utf8_bytes` | `len(system_prompt.encode("utf-8")) + len(user_prompt.encode("utf-8"))`，与封板 Prompt 的正文计量口径一致 |
+| `encoded_input_utf8_bytes` | 官方完整 message 编码字符串的 UTF-8 字节数，包含 reference framing |
+| `asset_identity` | publisher、repository、revision，以及 tokenizer/config/encoder/LICENSE 的四个 SHA-256 |
+
+**本地测量不等于 ProviderUsage。** 它不代表实际服务端处理量或计费量，不映射成
+`actual_prompt_tokens`，不替代 `ProviderUsage.prompt_tokens`，也不补齐缺失 Usage。
+两者数值不同仍然有效；Provider 返回的 Usage 继续作为调用后 accounting 的依据，
+现有 Cost/Receipt 也继续保留其既有估算及最终账单限制。
+
+版本 1 只接受 `InsightPrompt` v1，使用精确的 system、user 两条消息，显式调用
+官方 `encode_messages(messages, thinking_mode="chat")`，再对返回字符串调用
+`tokenizer.encode(encoded_input, add_special_tokens=False)`，取 `len(ids)`。
+不使用手写模板或“正文 tokens + 4”捷径；不注入额外换行、隐藏指令、tools、history。
+Provider 的顶层 `response_format=json_object` 不进入消息正文。
+不修改空白、换行或 Unicode，不 truncate、不 pad，不保存 Prompt、encoded text 或 IDs。
+现有 builder 负责 100,000 字节 Prompt 限制；测量 API 自身不新增大小/admission 策略。
+未来扩展消息形状、thinking/tools/history 或语义时必须复审 measurement contract/version；
+更换物理资产必须显式更新 asset identity，必要时同时升级测量版本。
+
+### 官方资产与安装依赖
+
+资产来自官方发布者 `deepseek-ai` 的
+[DeepSeek-V4-Flash-0731 固定修订](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash-0731/tree/7872f01b1d1fe23eabc4c98b48bffcef5a386062)，
+commit 为 `7872f01b1d1fe23eabc4c98b48bffcef5a386062`。
+本地目录为 `assets/deepseek_v4_flash_0731/`；`encoding_dsv4.py` 保留该修订
+`encoding/encoding_dsv4.py` 的完整原始内容。未采用 mutable main 或 documentation ZIP；
+此前审核发现 ZIP 与模型仓库资产存在 added-token 差异，不能互换。
+
+| 原始文件 | SHA-256 |
+| --- | --- |
+| `tokenizer.json` | `8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf` |
+| `tokenizer_config.json` | `6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547` |
+| `encoding_dsv4.py` | `abc0d26120250dda0ae077dc64aa28836026e61e970854aaeb792445e6a0dde6` |
+| `LICENSE` | `f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040` |
+
+以上哈希已从实际下载并保留的固定修订文件独立重算，与本地 `manifest.json` 对应。
+上游 MIT License（Copyright 2023 DeepSeek）原文一并保留，覆盖官方资产与复制的
+chat case 4 参考测试向量。测试向量位于 `tests/fixtures/deepseek_v4_flash_0731/`，
+来源是同修订的 `encoding/tests/test_input_4.json` 和 `test_output_4.txt`；
+输出逐字节校验，582 tokens 是本地校准值。该上游复杂样例只验证 encoder 资产，
+不扩大公开 API 的两消息范围。`.gitattributes` 对资产和向量禁用行尾转换，防止
+Windows `core.autocrlf` 改写原始字节后破坏哈希。
+
+按项目常规 `pip install -r requirements.txt` 安装 `tokenizers==0.22.2`
+（runtime 许可证 Apache-2.0）。本次 Windows x64 / Python 3.11.9 项目虚拟环境的正常
+安装新增 `huggingface-hub==1.30.0`、`filelock==3.32.5`、`fsspec==2026.7.0`、
+`hf-xet==1.6.0`、`httpx==0.28.1`、`httpcore==1.0.9`、`PyYAML==6.0.3`、
+`tqdm==4.70.0`；这是本次解析结果，传递依赖未另立全量 lock 契约。
+tokenizers 的正常依赖范围为 `huggingface-hub>=0.16.4,<2.0`，其余依赖由常规 pip
+解析；已有共享依赖继续复用。未新增 transformers、sentencepiece、tiktoken、模型权重、
+GPU 或仓库内平台 wheel。安装时取得依赖与运行时测量的网络边界分开。
+
+### 完整性、离线与错误边界
+
+首次使用先核对 manifest schema、固定 revision、runtime、模式及全部文件哈希；
+manifest 同时受代码内审核 pin 约束，修改文件并同步改写 manifest hash 也不能绕过校验。
+校验成功后，使用同一份已验证字节执行官方 encoder，并以 `Tokenizer.from_str`
+加载 tokenizer JSON，避免校验后再次读取可能变化的路径。这是严格本地加载，
+没有 `from_pretrained`、`trust_remote_code`、HF 下载、token-count endpoint 或自动修复。
+runtime 必须实际加载为 `0.22.2`，tokenizer 必须没有 truncation/padding。
+
+仅完整成功的资源装入进程缓存，不缓存 Prompt 或失败的半成品；磁盘随后变化不会改写
+已验证的内存快照，新进程/清空缓存后重新校验。测试通过私有
+`_load_verified_resources.cache_clear()` 隔离状态。
+相同 Prompt、资产、runtime 和测量版本得到相同结果，不依赖时间、随机数或 API key。
+缺失文件、哈希不符、错误修订、坏清单、不兼容 runtime 或编码失败均 fail closed，
+不下载、不 fallback、不 heuristic estimate。
+
+`TokenMeasurementError` 只公开固定 code 与安全消息：
+`INVALID_TOKEN_MEASUREMENT_INPUT` 表示错误类型、非法 UTF-8 或不支持的 Prompt 版本；
+`TOKEN_MEASUREMENT_UNAVAILABLE` 表示无法得到可信测量。
+不会把 Prompt、业务数据、asset 内容、文件秘密路径或原始异常文本写入消息/日志，
+运行时异常不挂接到公开异常的 cause/context。
+
+### 当前不做 token admission
+
+已有 Prompt Contract 的正文上限是 **100,000 bytes**；审核过的两消息 reference
+framing 是 66 bytes，所以有效 builder 输出的 encoded input 不超过 100,066 bytes。
+固定资产采用无展开 normalization 的 byte-level BPE，256 个基础 byte symbol 均可用，
+切分不扩张文本，BPE 只合并，added token 消耗非空文本，所用 postprocessor 不增加 IDs。
+因此在这一固定本地配置下 `local_encoded_input_tokens <= encoded_input_utf8_bytes`。
+这不是通用 tokenizer 定理，也不是 Provider Usage 上界声明。
+
+已复现 seed 113 / 66 的生产 builder 边界：正文 100,000 bytes、encoded input
+100,066 bytes、92,147 local tokens，完整测量且无截断。ASCII、中文、中英混合、emoji、
+组合 Unicode、JSON 密集文本、引号/反斜线、换行/转义样本也有独立参考计数回归；
+这些样本不声称穷尽所有 Unicode。
+
+此前审核的容量比较参考为 1,048,576、当前请求 completion allowance 为 16,384；
+既有 100 KB Prompt Contract 已使审核过的本地输入远低于该比较参考，因此当前
+context-window gate 冗余。这些数值没有写入测量逻辑成为 hosted capacity 或 admission
+契约。本阶段没有 token 阈值、allow/reject、financial budget、cost estimation、fallback、
+模型切换、UI 控件或 App 行为变化。
+
+这一基础用于未来模型/消息扩展、成本研究、第二 Provider 工作与诊断；并不声称当前
+计费等价。InsightContext、Prompt、Provider/DeepSeek、Usage、Pricing/Cost、Retry/Delay、
+Attempt Audit、Receipt V4、AI signature、success binding 与 Streamlit 生产路径均保持封板。
+`insight_retry_execution.py` 仍有“未参与 Streamlit”旧 docstring，作为已有非阻塞 P2
+文档债务保留，未在本阶段修改。
+
 ## 样例数据
 
 `data/sample_ecommerce_data.csv` 是为开发和测试准备的混合样例，包含正常经营数据、经营表现异常、Warning、Error、Exact Duplicate 和 Business Key Conflict。它不应被当作全量数据模板或行业基准。
@@ -1932,6 +2149,7 @@ CrossBorder Ops Radar/
 ├── app.py                       # Streamlit 确定性分析与可选 AI Insight UI
 ├── README.md
 ├── requirements.txt
+├── assets/deepseek_v4_flash_0731/ # 固定官方 tokenizer/encoder、LICENSE 与 manifest
 ├── data/
 │   └── sample_ecommerce_data.csv
 ├── src/
@@ -1943,6 +2161,7 @@ CrossBorder Ops Radar/
 │   ├── diagnostics.py           # Demo 阈值、七条规则与结构化诊断结果
 │   ├── insights.py              # 有界、JSON-safe 的 Structured Insight Context
 │   ├── insight_prompt.py         # Provider-independent Prompt 与 Output Schema
+│   ├── insight_token_measurement.py # 独立、离线的官方本地编码输入 token 测量
 │   ├── insight_provider.py       # Provider Protocol、Mock、strict JSON 与统一生成入口
 │   ├── deepseek_provider.py      # DeepSeek OpenAI-compatible real Provider Adapter
 │   ├── insight_receipt.py        # Immutable AI Generation Receipt 与 JSON-safe Contract
@@ -1965,6 +2184,8 @@ CrossBorder Ops Radar/
     ├── test_diagnostics.py
     ├── test_insights.py
     ├── test_insight_prompt.py
+    ├── test_insight_token_measurement.py
+    ├── fixtures/deepseek_v4_flash_0731/ # 固定上游 chat case 4 原始向量
     ├── test_insight_provider.py
     ├── test_deepseek_provider.py
     ├── test_insight_receipt.py

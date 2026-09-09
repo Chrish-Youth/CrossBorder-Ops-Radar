@@ -5,3 +5,8 @@ __pycache__/
 .streamlit/
 .env
 .DS_Store
+
+# Local artifact generation, portfolio inspection, and generated reports.
+.artifact-work/
+.portfolio-review/
+outputs/

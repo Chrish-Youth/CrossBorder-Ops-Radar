@@ -1,0 +1,16 @@
+{
+  "asset_schema_version": "1",
+  "publisher": "deepseek-ai",
+  "repository": "DeepSeek-V4-Flash-0731",
+  "revision": "7872f01b1d1fe23eabc4c98b48bffcef5a386062",
+  "files": {
+    "tokenizer.json": "8f9f37ca37fdc4f5fd36d5cf4d3b0e8392edb4e894fd10cc0d70b4957c8633cf",
+    "tokenizer_config.json": "6ac8c8dc065ed118161d02dd532749ae3f52c243deac27872134fae2f50d8547",
+    "encoding_dsv4.py": "abc0d26120250dda0ae077dc64aa28836026e61e970854aaeb792445e6a0dde6",
+    "LICENSE": "f2c6c602815669d292889e5be8c802f2ed950653b77999b1584e8e6aed25d040"
+  },
+  "runtime_name": "tokenizers",
+  "runtime_version": "0.22.2",
+  "encoding_mode": "chat",
+  "license": "MIT"
+}

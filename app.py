@@ -15,6 +15,8 @@ from typing import Any
 import pandas as pd
 import streamlit as st
 
+from src import ui_text as ui
+
 from src.deepseek_provider import DEEPSEEK_MODEL, DeepSeekInsightProvider
 from src.diagnostics import DiagnosticsError
 from src.insight_attempt_audit import FAILED, SUCCEEDED
@@ -70,8 +72,7 @@ logger = logging.getLogger(__name__)
 
 APP_TITLE = "CrossBorder Ops Radar"
 APP_SUBTITLE = (
-    "Cross-border e-commerce operations data validation, metrics and "
-    "diagnostic radar."
+    ui.TEXT["subtitle"]
 )
 DEFAULT_GROUP_BY_LABEL = "SKU"
 DOWNLOAD_MIME = (
@@ -143,65 +144,16 @@ _AI_RESULT_REJECTION_CODES: frozenset[str] = frozenset(
     }
 )
 
-_AI_ERROR_MESSAGES: dict[str, str] = {
-    "PROVIDER_CONFIGURATION_ERROR": (
-        "AI service is not configured. Set DEEPSEEK_API_KEY in the runtime "
-        "environment, then try again."
-    ),
-    "PROVIDER_AUTH_FAILED": "AI service authentication failed.",
-    "PROVIDER_ACCOUNT_ERROR": (
-        "The AI service account cannot currently complete requests."
-    ),
-    "PROVIDER_TIMEOUT": "The AI service request timed out.",
-    "PROVIDER_RATE_LIMITED": (
-        "The AI service is temporarily rate limited. Try again later."
-    ),
-    "PROVIDER_CONNECTION_FAILED": "Could not connect to the AI service.",
-    "PROVIDER_UNAVAILABLE": (
-        "The AI service is temporarily unavailable. Try again later."
-    ),
-    "PROVIDER_REQUEST_REJECTED": "The AI service rejected the request.",
-    "PROVIDER_FAILURE": "The AI service could not complete the request.",
-    "INVALID_PROVIDER_USAGE": (
-        "AI service returned metadata that could not be safely accepted."
-    ),
-    "INVALID_INSIGHT_INPUT": (
-        "The current analysis could not be prepared for AI interpretation."
-    ),
-    "PIPELINE_NOT_ANALYZABLE": (
-        "Run a successful deterministic analysis before generating AI insights."
-    ),
-    "INSIGHT_CONTEXT_TOO_LARGE": (
-        "The current analysis is too large for AI interpretation."
-    ),
-    "NON_FINITE_INSIGHT_VALUE": (
-        "The current analysis contains a value that cannot be safely interpreted."
-    ),
-    "INVALID_PROMPT_INPUT": (
-        "The current analysis could not be prepared for AI interpretation."
-    ),
-    "PROMPT_TOO_LARGE": (
-        "The current analysis is too large for AI interpretation."
-    ),
-    "INVALID_RECEIPT_V4_INPUT": (
-        "AI insights could not be saved with valid generation details."
-    ),
-    "INVALID_LOGICAL_GENERATION_COST": (
-        "AI cost details could not be safely recorded for this generation."
-    ),
-    "INVALID_RETRY_EXECUTION": (
-        "AI retry execution could not be completed safely."
-    ),
-}
+_AI_ERROR_MESSAGES: dict[str, str] = ui.AI_ERROR_MESSAGES
 
 _AI_GENERIC_REJECTION_MESSAGE = (
-    "The AI service returned a result that could not be safely accepted."
+    ui.AI_REJECTION_MESSAGE
 )
 _AI_UNEXPECTED_ERROR_MESSAGE = (
-    "AI insights could not be generated because of an unexpected error."
+    ui.AI_ERROR_FALLBACK
 )
 _AI_AUDIT_PRESENTATION_ERROR_MESSAGE = (
-    "AI generation details are temporarily unavailable."
+    ui.TEXT["audit_unavailable"]
 )
 
 _POST_EXECUTION_AI_FAILURE_CODES: frozenset[str] = frozenset(
@@ -223,30 +175,13 @@ _AI_LOG_STAGES: frozenset[str] = frozenset(
     }
 )
 
-_COST_UNAVAILABLE_MESSAGES: dict[str, str] = {
-    USAGE_UNAVAILABLE: "Token usage unavailable.",
-    CACHE_BREAKDOWN_UNAVAILABLE: (
-        "Cache hit/miss breakdown unavailable."
-    ),
-    POLICY_NOT_EFFECTIVE: (
-        "Pricing snapshot not applicable to this reference time."
-    ),
-    POLICY_NOT_APPLICABLE: (
-        "Pricing snapshot not applicable to this provider/model."
-    ),
-}
+_COST_UNAVAILABLE_MESSAGES: dict[str, str] = ui.COST_UNAVAILABLE_MESSAGES
 
 _COST_ESTIMATE_DISCLAIMER = (
-    "Estimated from recorded token usage and the stored pricing policy "
-    "snapshot; this is not the provider's final billed amount."
+    ui.TEXT["cost_disclaimer"]
 )
 
-_SCOPE_LABELS: dict[str, str] = {
-    "date": "Date",
-    "marketplace": "Marketplace",
-    "country": "Country",
-    "sku": "SKU",
-}
+_SCOPE_LABELS: dict[str, str] = ui.SCOPE_LABELS
 
 _PERCENTAGE_COLUMNS: frozenset[str] = frozenset(
     {"ctr", "cvr", "refund_rate"}
@@ -666,6 +601,8 @@ def _sync_analysis_signature(current_signature: str | None) -> None:
 
 
 def _ai_error_message(code: str) -> str:
+    if type(code) is not str or re.fullmatch(r"[A-Z][A-Z0-9_]*", code) is None:
+        return _AI_UNEXPECTED_ERROR_MESSAGE
     if code in _AI_RESULT_REJECTION_CODES:
         return _AI_GENERIC_REJECTION_MESSAGE
     return _AI_ERROR_MESSAGES.get(code, _AI_UNEXPECTED_ERROR_MESSAGE)
@@ -836,41 +773,41 @@ def _run_ai_generation(
 
 def _format_ai_scope(scope: dict[str, Any]) -> str:
     if not scope:
-        return "Overall"
+        return ui.GROUP_LABELS["Overall"]
     return " · ".join(
-        f"{_SCOPE_LABELS.get(dimension, dimension.replace('_', ' ').title())}: "
+        f"{_SCOPE_LABELS.get(dimension, ui.TEXT['unknown_field'])}: "
         f"{value}"
         for dimension, value in scope.items()
     )
 
 
 def _render_ai_output(output: InsightOutput) -> None:
-    st.markdown("#### Executive Summary")
+    st.markdown('#### ' + ui.TEXT['summary'])
     st.write(output.executive_summary)
 
-    st.markdown("#### Priority Insights")
+    st.markdown('#### ' + ui.TEXT['priority'])
     if not output.priority_insights:
-        st.info("No priority insight was produced for this analysis.")
+        st.info(ui.TEXT['no_priority'])
     for insight in output.priority_insights:
         with st.expander(_format_ai_scope(insight.scope)):
-            st.caption(f"Confidence: {insight.confidence.title()}")
-            st.markdown("**Observation**")
+            st.caption(ui.TEXT["confidence"].format(value=ui.CONFIDENCE_LABELS[insight.confidence]))
+            st.markdown('**' + ui.TEXT['observation'] + "**")
             st.write(insight.observation)
-            st.markdown("**Evidence codes**")
+            st.markdown('**' + ui.TEXT['evidence_codes'] + "**")
             st.markdown(
                 " · ".join(f"`{code}`" for code in insight.evidence_codes)
             )
             if insight.possible_explanations:
-                st.markdown("**Possible explanations (hypotheses)**")
+                st.markdown('**' + ui.TEXT['explanations'] + "**")
                 for explanation in insight.possible_explanations:
                     st.markdown(f"- {explanation}")
             if insight.recommended_checks:
-                st.markdown("**Recommended checks (investigations)**")
+                st.markdown('**' + ui.TEXT['checks'] + "**")
                 for check in insight.recommended_checks:
                     st.markdown(f"- {check}")
 
     if output.overall_limitations:
-        st.markdown("#### Limitations")
+        st.markdown('#### ' + ui.TEXT['limitations'])
         for limitation in output.overall_limitations:
             st.markdown(f"- {limitation}")
 
@@ -882,9 +819,9 @@ def _format_receipt_time(generated_at: str) -> str:
 
 def _format_receipt_group_by(group_by: tuple[str, ...]) -> str:
     if not group_by:
-        return "Overall"
+        return ui.GROUP_LABELS["Overall"]
     return " · ".join(
-        _SCOPE_LABELS.get(dimension, dimension.replace("_", " ").title())
+        _SCOPE_LABELS.get(dimension, ui.TEXT["unknown_field"])
         for dimension in group_by
     )
 
@@ -904,34 +841,28 @@ def _render_cost_details(
     logical_cost: LogicalGenerationCostSummary,
 ) -> None:
     """Render final-attempt and logical-generation cost truth separately."""
-
-    st.markdown("**Cost Estimate**")
-    st.caption(
-        f"Pricing reference: {cost.pricing_reference_at} · "
-        f"Pricing policy: {cost.pricing_policy_version}"
-    )
+    st.markdown("**" + ui.TEXT["cost"] + "**")
+    st.caption(ui.TEXT["pricing"].format(
+        time=cost.pricing_reference_at, policy=cost.pricing_policy_version,
+    ))
     if cost.status == UNAVAILABLE:
-        st.caption("Final successful attempt cost estimate unavailable.")
-        reason_message = _COST_UNAVAILABLE_MESSAGES.get(
-            cost.unavailable_reason or "",
-            "Cost estimate unavailable.",
-        )
-        st.caption(reason_message)
+        st.caption(ui.TEXT["final_cost_unavailable"])
+        st.caption(_COST_UNAVAILABLE_MESSAGES.get(
+            cost.unavailable_reason or "", ui.TEXT["cost_unavailable"],
+        ))
     elif cost.status == AVAILABLE and cost.estimate is not None:
         estimate = cost.estimate
-        st.caption(
-            "Final successful attempt estimated API cost (USD): "
-            f"${_format_cost_amount(estimate.total_estimated_cost)}"
-        )
-        st.caption(f"Pricing tier: {estimate.pricing_tier}")
-        st.caption(
-            "Cache-hit input cost: "
-            f"${_format_cost_amount(estimate.prompt_cache_hit_cost)} · "
-            "Cache-miss input cost: "
-            f"${_format_cost_amount(estimate.prompt_cache_miss_cost)} · "
-            "Completion cost: "
-            f"${_format_cost_amount(estimate.completion_cost)}"
-        )
+        st.caption(ui.TEXT["final_cost"].format(
+            amount=_format_cost_amount(estimate.total_estimated_cost),
+        ))
+        st.caption(ui.TEXT["pricing_tier"].format(
+            tier=ui.PRICING_TIER_LABELS.get(estimate.pricing_tier, ui.TEXT["unknown_state"]),
+        ))
+        st.caption(ui.TEXT["cost_parts"].format(
+            hit=_format_cost_amount(estimate.prompt_cache_hit_cost),
+            miss=_format_cost_amount(estimate.prompt_cache_miss_cost),
+            completion=_format_cost_amount(estimate.completion_cost),
+        ))
     else:
         raise ValueError("Invalid Cost Audit presentation state")
 
@@ -939,20 +870,11 @@ def _render_cost_details(
         amount = logical_cost.estimated_total_cost_usd
         if amount is None:
             raise ValueError("Logical-generation total is missing")
-        st.caption(
-            "Logical-generation estimated total (USD): "
-            f"${_format_cost_amount(amount)}"
-        )
+        st.caption(ui.TEXT["logical_total"].format(amount=_format_cost_amount(amount)))
     elif logical_cost.status == LOGICAL_COST_UNAVAILABLE:
-        st.caption(
-            "Logical-generation total estimate unavailable because the final "
-            "successful attempt cost estimate is unavailable."
-        )
+        st.caption(ui.TEXT["logical_unavailable"])
     elif logical_cost.status == UNKNOWN_TOTAL:
-        st.caption(
-            "Logical-generation total spend is unknown because one or more "
-            "prior failed attempts have unknown cost."
-        )
+        st.caption(ui.TEXT["logical_unknown"])
     else:
         raise ValueError("Invalid logical-generation cost presentation state")
     st.caption(_COST_ESTIMATE_DISCLAIMER)
@@ -1030,92 +952,91 @@ def _render_retry_provenance(
     attempts = source.attempt_audit.attempts
     delays = source.delay_audit.records
     status = source.status if isinstance(source, RetryExecutionResult) else SUCCEEDED
-    st.markdown("**Retry Provenance**")
-    st.caption(
-        f"Completed execution status: {status} · "
-        f"Provider attempts: {len(attempts):,} · "
-        f"Completed retry-delay transitions: {len(delays):,}"
-    )
-    st.caption(
-        f"Retry policy: {source.attempt_audit.retry_policy_version} · "
-        f"Delay policy: {source.delay_audit.policy_version}"
-    )
+    st.markdown("**" + ui.TEXT["retry"] + "**")
+    st.caption(ui.TEXT["execution_counts"].format(
+        status=ui.EXECUTION_STATUS_LABELS[status],
+        attempts=len(attempts), delays=len(delays),
+    ))
+    st.caption(ui.TEXT["retry_policies"].format(
+        retry=source.attempt_audit.retry_policy_version,
+        delay=source.delay_audit.policy_version,
+    ))
     if delays:
         requested = " · ".join(
-            f"after attempt {record.after_attempt_number}: "
-            f"{record.delay_decision.delay_ms:,} ms requested"
+            ui.TEXT["delay_item"].format(
+                attempt=record.after_attempt_number,
+                milliseconds=record.delay_decision.delay_ms,
+            )
             for record in delays
         )
-        st.caption(f"Requested retry delays: {requested}")
+        st.caption(ui.TEXT["requested_delays"].format(items=requested))
 
 
 def _render_failure_details(failure: AiGenerationFailure) -> None:
-    with st.expander("Failed Generation Details"):
-        st.caption(f"Failure code: {failure.error_code}")
+    with st.expander(ui.TEXT['failure_details']):
+        st.caption(ui.TEXT["failure_code"].format(code=failure.error_code))
         result = failure.execution_result
         if result is None:
             st.caption(
-                "Attempt audit unavailable because no completed Retry Execution "
-                "result was returned."
+                ui.TEXT['no_attempt_audit']
             )
             return
         _render_retry_provenance(result)
         if result.status == SUCCEEDED:
             st.caption(
-                "Provider execution completed successfully, but post-execution "
-                "application processing failed."
+                ui.TEXT['post_execution_failure']
             )
 
 
 def _render_generation_details(receipt: InsightGenerationReceiptV4) -> None:
-    with st.expander("Generation Details"):
-        st.caption(
-            f"Generated at {_format_receipt_time(receipt.generated_at)} · "
-            f"Analysis ID {receipt.analysis_signature[:12]}"
-        )
-        provider_name = _provider_display_name(receipt.provider)
-        st.markdown(f"**Provider:** {provider_name} · **Model:** `{receipt.model}`")
-        st.markdown(f"**Analysis scope:** {_format_receipt_group_by(receipt.group_by)}")
-        st.caption(
-            f"Context v{receipt.context_version} · Prompt v{receipt.prompt_version} "
-            f"· Output v{receipt.output_version} · Receipt v{receipt.version}"
-        )
-        st.caption(
-            f"Metric groups: {receipt.metric_record_count:,} · "
-            f"Diagnostic signals: {receipt.diagnostic_signal_count:,} · "
-            f"Priority insights: {receipt.priority_insight_count:,}"
-        )
-        st.markdown("**Token Usage**")
+    with st.expander(ui.TEXT["generation_details"]):
+        st.caption(ui.TEXT["generated_at"].format(
+            time=_format_receipt_time(receipt.generated_at),
+            analysis_id=receipt.analysis_signature[:12],
+        ))
+        st.markdown(ui.TEXT["provider_model"].format(
+            provider=_provider_display_name(receipt.provider), model=receipt.model,
+        ))
+        st.markdown(ui.TEXT["analysis_scope"].format(
+            scope=_format_receipt_group_by(receipt.group_by),
+        ))
+        st.caption(ui.TEXT["versions"].format(
+            context=receipt.context_version, prompt=receipt.prompt_version,
+            output=receipt.output_version, receipt=receipt.version,
+        ))
+        st.caption(ui.TEXT["generation_counts"].format(
+            metrics=receipt.metric_record_count,
+            diagnostics=receipt.diagnostic_signal_count,
+            insights=receipt.priority_insight_count,
+        ))
+        st.markdown("**" + ui.TEXT["usage"] + "**")
         usage = receipt.usage
         if usage is None:
-            st.caption("Token usage unavailable for this generation.")
+            st.caption(ui.TEXT["no_usage"])
         else:
-            st.caption(
-                f"Prompt tokens: {usage.prompt_tokens:,} · "
-                f"Completion tokens: {usage.completion_tokens:,} · "
-                f"Total tokens: {usage.total_tokens:,}"
-            )
+            st.caption(ui.TEXT["usage_counts"].format(
+                prompt=usage.prompt_tokens, completion=usage.completion_tokens,
+                total=usage.total_tokens,
+            ))
             optional_usage: list[str] = []
             if usage.prompt_cache_hit_tokens is not None:
-                optional_usage.append(
-                    "Prompt cache hit tokens: "
-                    f"{usage.prompt_cache_hit_tokens:,}"
-                )
+                optional_usage.append(ui.TEXT["cache_hit_tokens"].format(
+                    count=usage.prompt_cache_hit_tokens,
+                ))
             if usage.prompt_cache_miss_tokens is not None:
-                optional_usage.append(
-                    "Prompt cache miss tokens: "
-                    f"{usage.prompt_cache_miss_tokens:,}"
-                )
+                optional_usage.append(ui.TEXT["cache_miss_tokens"].format(
+                    count=usage.prompt_cache_miss_tokens,
+                ))
             if usage.reasoning_tokens is not None:
-                optional_usage.append(
-                    f"Reasoning tokens: {usage.reasoning_tokens:,}"
-                )
+                optional_usage.append(ui.TEXT["reasoning_tokens"].format(
+                    count=usage.reasoning_tokens,
+                ))
             if optional_usage:
                 st.caption(" · ".join(optional_usage))
         _render_retry_provenance(receipt)
         _render_cost_details(receipt.cost, receipt.logical_generation_cost)
         st.download_button(
-            "Download AI Receipt",
+            ui.TEXT["download_receipt"],
             data=build_receipt_json_bytes(receipt),
             file_name=build_receipt_download_filename(receipt),
             mime=RECEIPT_DOWNLOAD_MIME,
@@ -1171,26 +1092,22 @@ def _render_ai_section(
         group_by=group_by,
     )
 
-    st.subheader("AI Insights")
+    st.subheader(ui.TEXT['ai'])
     st.caption(
-        "Optional interpretation powered by DeepSeek. Generation occurs only "
-        "when you explicitly click the button below."
+        ui.TEXT['ai_help']
     )
     st.info(
-        "AI interprets existing deterministic metrics and diagnostic signals. "
-        "Diagnostic signals are observations; possible explanations are "
-        "hypotheses; recommended checks are investigations—not proven root "
-        "causes or guaranteed actions."
+        ui.TEXT['ai_limits']
     )
 
     button_label = (
-        "Regenerate AI Insights"
+        ui.TEXT['regenerate']
         if current_output is not None
-        else "Generate AI Insights"
+        else ui.TEXT['generate']
     )
     generate_clicked = st.button(button_label, key="generate_ai_insights")
     if generate_clicked:
-        with st.spinner("Generating AI insights..."):
+        with st.spinner(ui.TEXT['generating']):
             _run_ai_generation(
                 result,
                 signature=ai_signature,
@@ -1213,8 +1130,7 @@ def _render_ai_section(
         ai_error_message = _ai_error_message(failure.error_code)
         if current_output is not None:
             st.warning(
-                "AI regeneration failed. Showing the previous successful result. "
-                f"{ai_error_message}"
+                ui.TEXT["regeneration_failed"].format(message=ai_error_message)
             )
         else:
             st.error(ai_error_message)
@@ -1226,12 +1142,20 @@ def _render_ai_section(
 
 
 def _render_error(error: ErrorPresentation) -> None:
-    st.error(error.title)
-    details = f"Code: `{error.code}`"
-    if error.stage is not None:
-        details += f" · Stage: `{error.stage}`"
-    st.markdown(details)
-    st.caption(error.message)
+    # Only controlled titles, stable codes and stages may reach the UI.
+    # ErrorPresentation remains unchanged; its raw message is never rendered.
+    title = error.title if type(error.title) is str else ""
+    st.error(ui.ERROR_TITLES.get(title, ui.ERROR_TITLES["Unexpected application error."]))
+    code = error.code
+    valid_code = type(code) is str and re.fullmatch(r"[A-Z][A-Z0-9_]*", code) is not None
+    if valid_code:
+        details = ui.TEXT["error_code"].format(code=code)
+        if type(error.stage) is str and error.stage in {
+            "loader", "validator", "validation", "metrics", "diagnostics", "report"
+        }:
+            details += ui.TEXT["error_stage"].format(stage=error.stage)
+        st.markdown(details)
+    st.caption(ui.ERROR_MESSAGES.get(code, ui.ERROR_FALLBACK) if valid_code else ui.ERROR_FALLBACK)
 
 
 def _validation_issues_dataframe(
@@ -1246,16 +1170,104 @@ def _validation_issues_dataframe(
     )
 
 
+def _table_column_config(columns: object, table_kind: str) -> dict[str, Any]:
+    """Keep Arrow/CSV names intact; labels only affect the visible header."""
+    return {
+        column: st.column_config.Column(
+            label=(
+                ui.TABLE_CODE_LABELS[table_kind]
+                if column == "code" and table_kind in ui.TABLE_CODE_LABELS
+                else ui.FIELD_LABELS.get(column, column)
+            ),
+            help=ui.METRIC_HELP.get(column),
+        )
+        for column in columns
+    }
+
+
+def _table_cell_display(frame: pd.DataFrame, table_kind: str) -> Any:
+    """Style controlled text without changing the data used by built-in CSV.
+
+    Never raise a Styler size limit or allow its row/column trimming to hide data.
+    Metrics retain their existing number formatting and need only header labels.
+    """
+    if table_kind == "metrics" or frame.empty:
+        return frame
+    max_rows = pd.get_option("styler.render.max_rows")
+    max_columns = pd.get_option("styler.render.max_columns")
+    if (
+        frame.size > pd.get_option("styler.render.max_elements")
+        or (max_rows is not None and len(frame) > max_rows)
+        or (max_columns is not None and len(frame.columns) > max_columns)
+        or not frame.index.is_unique
+    ):
+        return frame
+    style = frame.style.set_uuid("radar_" + table_kind)
+    for column, labels in (
+        ("level", ui.LEVEL_LABELS), ("severity", ui.LEVEL_LABELS),
+        ("field", ui.FIELD_LABELS), ("metric", ui.FIELD_LABELS),
+    ):
+        if column in frame:
+            style.format(
+                lambda value, labels=labels: (
+                    labels.get(value, value) if isinstance(value, str) else value
+                ),
+                subset=[column], na_rep="—",
+            )
+    if "message" in frame and "code" in frame:
+        # Group by controlled code/field facts, never by the original prose.
+        groups: dict[str, list[Any]] = {}
+        for index, row in frame.iterrows():
+            code = row["code"]
+            if table_kind == "validation":
+                field = row.get("field")
+                label = ui.FIELD_LABELS.get(field, ui.TEXT["unknown_field"])
+                template = ui.VALIDATION_MESSAGES.get(code, ui.TEXT["unknown_issue"])
+                message = template.format(field=label)
+            else:
+                message = ui.DIAGNOSTIC_MESSAGES.get(code, ui.TEXT["unknown_issue"])
+            groups.setdefault(message, []).append(index)
+        for message, indexes in groups.items():
+            style.format(
+                lambda _value, message=message: message,
+                subset=pd.IndexSlice[indexes, ["message"]],
+            )
+    return style
+
+
+def _render_table(frame: pd.DataFrame, table_kind: str, *, height: int) -> None:
+    display = _table_cell_display(frame, table_kind)
+    if display is frame and table_kind != "metrics" and not frame.empty:
+        st.caption(ui.TEXT["large_table"])
+        with st.expander(ui.TEXT["legend"]):
+            labels = (
+                ui.VALIDATION_MESSAGES if table_kind == "validation"
+                else ui.DIAGNOSTIC_LABELS
+            )
+            st.text("\n".join(
+                f"{code}：{label.format(field=ui.TEXT['unknown_field'])}"
+                for code, label in labels.items()
+            ))
+            st.text(" · ".join(f"{key}：{value}" for key, value in ui.LEVEL_LABELS.items()))
+    st.dataframe(
+        display,
+        column_config=_table_column_config(frame.columns, table_kind),
+        hide_index=True,
+        width="stretch",
+        height=height,
+    )
+
+
 def _render_validation(
     result: PipelineResult,
     report_data: ReportData | None,
 ) -> None:
     report = result.validation.report
-    st.subheader("Validation")
+    st.subheader(ui.TEXT['validation'])
     row_columns = st.columns(4)
     for column, label, value in zip(
         row_columns,
-        ("Raw Rows", "Valid Rows", "Excluded Rows", "Warning Rows"),
+        (ui.TEXT['raw_rows'], ui.TEXT['valid_rows'], ui.TEXT['excluded_rows'], ui.TEXT['warning_rows']),
         (
             report.total_rows,
             report.valid_rows,
@@ -1266,35 +1278,30 @@ def _render_validation(
         column.metric(label, value)
 
     issue_columns = st.columns(3)
-    issue_columns[0].metric("Fatal Issues", len(report.fatal_errors))
-    issue_columns[1].metric("Error Issues", len(report.errors))
-    issue_columns[2].metric("Warning Issues", len(report.warnings))
+    issue_columns[0].metric(ui.TEXT['fatal_issues'], len(report.fatal_errors))
+    issue_columns[1].metric(ui.TEXT['error_issues'], len(report.errors))
+    issue_columns[2].metric(ui.TEXT['warning_issues'], len(report.warnings))
 
     if report.fatal_errors:
         st.error(
-            "File validation failed. Fix the fatal data contract issues before "
-            "metrics can be generated."
+            ui.TEXT['validation_failed']
         )
     else:
         if report.errors:
             st.error(
-                f"{len(report.errors)} validation error issue(s) were excluded "
-                "from analysis."
+                ui.TEXT["validation_errors"].format(count=len(report.errors))
             )
         if report.warnings:
             st.warning(
-                f"{len(report.warnings)} validation warning issue(s) were retained "
-                "or handled by the frozen validation rules."
+                ui.TEXT["validation_warnings"].format(count=len(report.warnings))
             )
         if not report.errors and not report.warnings:
-            st.success("No validation issues were found.")
+            st.success(ui.TEXT['validation_clean'])
 
     issues = _validation_issues_dataframe(result, report_data)
     if not issues.empty:
-        st.dataframe(
-            issues,
-            hide_index=True,
-            width="stretch",
+        _render_table(
+            issues, "validation",
             height=min(420, 38 * (len(issues) + 1)),
         )
 
@@ -1302,15 +1309,15 @@ def _render_validation(
 def _render_metrics(result: PipelineResult, group_label: str) -> None:
     if result.status is not PipelineStatus.SUCCESS or result.metrics is None:
         return
-    st.subheader("Metrics")
-    st.caption(f"{len(result.metrics):,} aggregated group(s) · {group_label}")
+    st.subheader(ui.TEXT['metrics'])
+    st.caption(ui.TEXT["metric_groups"].format(
+        count=len(result.metrics), scope=ui.GROUP_LABELS[group_label]
+    ))
     if result.metrics.empty:
-        st.info("No valid rows remained for metrics calculation.")
+        st.info(ui.TEXT['no_metrics'])
         return
-    st.dataframe(
-        build_metrics_display(result.metrics),
-        hide_index=True,
-        width="stretch",
+    _render_table(
+        build_metrics_display(result.metrics), "metrics",
         height=min(520, 38 * (len(result.metrics) + 1)),
     )
 
@@ -1318,40 +1325,37 @@ def _render_metrics(result: PipelineResult, group_label: str) -> None:
 def _render_diagnostics(result: PipelineResult) -> None:
     if result.status is not PipelineStatus.SUCCESS or result.diagnostics is None:
         return
-    st.subheader("Diagnostic Signals")
+    st.subheader(ui.TEXT['diagnostics'])
     st.caption(
-        "Diagnostic signals use Demo Default Thresholds and are not industry "
-        "standards. They are observations, not root-cause conclusions."
+        ui.TEXT['diagnostics_help']
     )
     if result.diagnostics.empty:
         st.info(
-            "No diagnostic signals were triggered by the current Demo Default "
-            "Thresholds."
+            ui.TEXT['no_diagnostics']
         )
         return
-    st.dataframe(
-        build_diagnostics_display(result.diagnostics),
-        hide_index=True,
-        width="stretch",
+    _render_table(
+        build_diagnostics_display(result.diagnostics), "diagnostics",
         height=min(520, 44 * (len(result.diagnostics) + 1)),
     )
 
 
 def _render_download() -> None:
-    st.subheader("Excel Report")
+    st.subheader(ui.TEXT['excel'])
     report_error = st.session_state.report_error
     if report_error is not None:
         _render_error(report_error)
         return
     excel_bytes = st.session_state.excel_bytes
     if excel_bytes is None:
-        st.info("Excel report is not available for this analysis.")
+        st.info(ui.TEXT['no_excel'])
         return
     st.download_button(
-        "Download Excel Report",
+        ui.TEXT['download_excel'],
         data=excel_bytes,
         file_name=st.session_state.download_filename,
         mime=DOWNLOAD_MIME,
+        key="download_excel_report",
         type="primary",
     )
 
@@ -1379,20 +1383,22 @@ def main() -> None:
     st.title(APP_TITLE)
     st.caption(APP_SUBTITLE)
     st.write(
-        "Upload daily marketplace data, choose an analysis level, then run the "
-        "deterministic validation, metrics, diagnostics and Excel report flow."
+        ui.TEXT['intro']
     )
 
-    st.subheader("Upload and configuration")
+    st.subheader(ui.TEXT['upload_section'])
     uploaded_file = st.file_uploader(
-        "Operations data",
+        ui.TEXT['upload'],
         type=["csv", "xlsx"],
         accept_multiple_files=False,
-        help="Supported formats: CSV and XLSX.",
+        help=ui.TEXT['upload_help'],
+        key="operations_data_upload",
     )
     group_label = st.selectbox(
-        "Analysis level",
+        ui.TEXT['analysis_level'],
         options=tuple(GROUP_BY_OPTIONS),
+        format_func=ui.GROUP_LABELS.__getitem__,
+        key="analysis_level",
         index=tuple(GROUP_BY_OPTIONS).index(DEFAULT_GROUP_BY_LABEL),
     )
     group_by = resolve_group_by(group_label)
@@ -1409,14 +1415,15 @@ def main() -> None:
     _sync_analysis_signature(current_signature)
 
     run_clicked = st.button(
-        "Run Analysis",
+        ui.TEXT['run'],
         type="primary",
         disabled=uploaded_file is None,
+        key="run_analysis",
     )
     if run_clicked and uploaded_file is not None and file_bytes is not None:
         _clear_analysis_state()
         st.session_state.analysis_signature = current_signature
-        with st.spinner("Analyzing data..."):
+        with st.spinner(ui.TEXT['analyzing']):
             try:
                 artifacts = execute_analysis(
                     file_bytes,
@@ -1438,7 +1445,7 @@ def main() -> None:
                 st.session_state.analysis_error = error_presentation(error)
 
     if uploaded_file is None:
-        st.info("Upload a CSV or XLSX file to begin.")
+        st.info(ui.TEXT['no_upload'])
         return
 
     analysis_error = st.session_state.analysis_error
@@ -1447,7 +1454,7 @@ def main() -> None:
         _render_error(analysis_error)
         return
     if result is None:
-        st.info("Ready to analyze.")
+        st.info(ui.TEXT['ready'])
         return
 
     _render_validation(result, st.session_state.report_data)
