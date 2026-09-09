@@ -1,3 +1,5 @@
 # Preserve exact upstream bytes and SHA-256 values across Windows checkouts.
 /assets/deepseek_v4_flash_0731/* -text
 /tests/fixtures/deepseek_v4_flash_0731/* -text
+# The pinned upstream license uses CRLF; preserve it without whitespace warnings.
+/assets/deepseek_v4_flash_0731/LICENSE whitespace=cr-at-eol
