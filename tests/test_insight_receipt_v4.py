@@ -737,13 +737,3 @@ def test_v4_has_no_asdict_clock_network_pricing_or_output_content() -> None:
         "exception",
         }
     )
-
-
-def test_app_uses_v4_only_after_retry_execution_succeeds() -> None:
-    app_source = (ROOT / "app.py").read_text(encoding="utf-8")
-
-    assert "from src.insight_receipt_v4 import" in app_source
-    assert "build_insight_receipt_v4(" in app_source
-    assert "execute_insight_generation_with_retry(" in app_source
-    assert "build_insight_generation_receipt(" not in app_source
-    assert INSIGHT_RECEIPT_VERSION == "3"

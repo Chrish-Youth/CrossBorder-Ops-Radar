@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 import hashlib
-import hmac
 import json
 import logging
 from pathlib import Path
@@ -17,52 +16,11 @@ import streamlit as st
 
 from src import ui_text as ui
 
-from src.deepseek_provider import DEEPSEEK_MODEL, DeepSeekInsightProvider
+from src.deepseek_provider import DeepSeekInsightProvider
 from src.diagnostics import DiagnosticsError
-from src.insight_attempt_audit import FAILED, SUCCEEDED
-from src.insight_cost_audit import (
-    AVAILABLE,
-    UNAVAILABLE,
-    CostAuditMetadata,
-)
-from src.insight_logical_generation_cost import (
-    FULLY_ESTIMATED,
-    UNKNOWN_TOTAL,
-    UNAVAILABLE as LOGICAL_COST_UNAVAILABLE,
-    LogicalGenerationCostError,
-    LogicalGenerationCostSummary,
-)
-from src.insight_pricing import (
-    CACHE_BREAKDOWN_UNAVAILABLE,
-    POLICY_NOT_APPLICABLE,
-    POLICY_NOT_EFFECTIVE,
-    USAGE_UNAVAILABLE,
-)
-from src.insight_prompt import (
-    INSIGHT_OUTPUT_VERSION,
-    INSIGHT_PROMPT_VERSION,
-    InsightOutput,
-    InsightOutputError,
-    InsightPromptError,
-)
-from src.insight_provider import InsightProviderError
-from src.insight_receipt import DEEPSEEK_PROVIDER_NAME
-from src.insight_receipt_v4 import (
-    INSIGHT_RECEIPT_V4_VERSION,
-    InsightGenerationReceiptV4,
-    InsightReceiptV4Error,
-    build_insight_receipt_v4,
-)
-from src.insight_retry_execution import (
-    RetryExecutionError,
-    RetryExecutionResult,
-    execute_insight_generation_with_retry,
-)
-from src.insights import (
-    INSIGHT_CONTEXT_VERSION,
-    InsightContextError,
-    build_insight_context,
-)
+from src.insight_prompt import InsightOutput, InsightOutputError, InsightPromptError
+from src.insight_provider import InsightProviderError, generate_insight_with_metadata
+from src.insights import InsightContextError, build_insight_context
 from src.loader import DataLoadError
 from src.metrics import MetricsCalculationError
 from src.pipeline import PipelineError, PipelineResult, PipelineStatus, run_pipeline
@@ -81,14 +39,6 @@ DOWNLOAD_MIME = (
 DEFAULT_DOWNLOAD_FILENAME = "crossborder_ops_radar_report.xlsx"
 DOWNLOAD_FILENAME_SUFFIX = "_crossborder_ops_radar.xlsx"
 MAX_DOWNLOAD_FILENAME_BYTES = 180
-RECEIPT_DOWNLOAD_MIME = "application/json"
-RECEIPT_DOWNLOAD_PREFIX = "crossborder_ops_ai_receipt_"
-RECEIPT_DOWNLOAD_SUFFIX = ".json"
-AI_SUCCESS_BINDING_VERSION = "1"
-
-_PROVIDER_DISPLAY_NAMES: dict[str, str] = {
-    "deepseek": "DeepSeek",
-}
 
 GROUP_BY_OPTIONS: dict[str, list[str] | None] = {
     "Overall": None,
@@ -115,73 +65,11 @@ _ANALYSIS_SESSION_DEFAULTS: dict[str, Any] = {
     "download_filename": None,
 }
 
-_AI_SESSION_DEFAULTS: dict[str, Any] = {
-    "ai_output": None,
-    "ai_receipt": None,
-    "ai_signature": None,
-    "ai_success_binding": None,
-    "ai_failure": None,
-}
-
-_LEGACY_AI_ERROR_KEYS: tuple[str, ...] = (
-    "ai_error_code",
-    "ai_error_message",
-)
-
 _SESSION_DEFAULTS: dict[str, Any] = {
     **_ANALYSIS_SESSION_DEFAULTS,
-    **_AI_SESSION_DEFAULTS,
+    "ai_generation": None,
+    "ai_error": None,
 }
-
-_AI_RESULT_REJECTION_CODES: frozenset[str] = frozenset(
-    {
-        "INVALID_PROVIDER",
-        "INVALID_PROVIDER_RESPONSE",
-        "PROVIDER_RESPONSE_TOO_LARGE",
-        "INVALID_PROVIDER_JSON",
-        "INVALID_INSIGHT_OUTPUT",
-        "OUTPUT_TOO_LARGE",
-    }
-)
-
-_AI_ERROR_MESSAGES: dict[str, str] = ui.AI_ERROR_MESSAGES
-
-_AI_GENERIC_REJECTION_MESSAGE = (
-    ui.AI_REJECTION_MESSAGE
-)
-_AI_UNEXPECTED_ERROR_MESSAGE = (
-    ui.AI_ERROR_FALLBACK
-)
-_AI_AUDIT_PRESENTATION_ERROR_MESSAGE = (
-    ui.TEXT["audit_unavailable"]
-)
-
-_POST_EXECUTION_AI_FAILURE_CODES: frozenset[str] = frozenset(
-    {
-        "INVALID_RECEIPT_V4_INPUT",
-        "INVALID_LOGICAL_GENERATION_COST",
-        "UNEXPECTED_AI_ERROR",
-    }
-)
-
-_AI_LOG_STAGES: frozenset[str] = frozenset(
-    {
-        "context_build",
-        "provider_setup",
-        "retry_execution",
-        "receipt_build",
-        "success_binding",
-        "render",
-    }
-)
-
-_COST_UNAVAILABLE_MESSAGES: dict[str, str] = ui.COST_UNAVAILABLE_MESSAGES
-
-_COST_ESTIMATE_DISCLAIMER = (
-    ui.TEXT["cost_disclaimer"]
-)
-
-_SCOPE_LABELS: dict[str, str] = ui.SCOPE_LABELS
 
 _PERCENTAGE_COLUMNS: frozenset[str] = frozenset(
     {"ctr", "cvr", "refund_rate"}
@@ -261,24 +149,6 @@ class AnalysisArtifacts:
     report_error: ErrorPresentation | None
 
 
-@dataclass(frozen=True)
-class AiGenerationArtifacts:
-    """One validated AI output and its matching immutable receipt."""
-
-    output: InsightOutput
-    receipt: InsightGenerationReceiptV4
-    success_binding: str
-
-
-@dataclass(frozen=True)
-class AiGenerationFailure:
-    """Failure provenance for one explicit AI generation operation."""
-
-    signature: str
-    error_code: str
-    execution_result: RetryExecutionResult | None
-
-
 def resolve_group_by(label: str) -> list[str] | None:
     """Resolve one fixed UI label to the Metrics API parameter."""
 
@@ -306,80 +176,6 @@ def build_analysis_signature(
         )
     )
     return digest.hexdigest()
-
-
-def build_ai_signature(analysis_signature: str) -> str:
-    """Bind cached AI output to one analysis and the frozen AI contract."""
-
-    components = (
-        analysis_signature,
-        INSIGHT_CONTEXT_VERSION,
-        INSIGHT_PROMPT_VERSION,
-        INSIGHT_OUTPUT_VERSION,
-        DEEPSEEK_MODEL,
-    )
-    payload = json.dumps(
-        components,
-        ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
-
-
-def build_ai_success_binding(
-    output: InsightOutput,
-    receipt: InsightGenerationReceiptV4,
-    ai_signature: str,
-) -> str:
-    """Bind one App-local success snapshot without exporting its payload."""
-
-    if not isinstance(output, InsightOutput):
-        raise TypeError("output must be InsightOutput")
-    if not isinstance(receipt, InsightGenerationReceiptV4):
-        raise TypeError("receipt must be InsightGenerationReceiptV4")
-    if (
-        not isinstance(ai_signature, str)
-        or re.fullmatch(r"[0-9a-f]{64}", ai_signature) is None
-    ):
-        raise ValueError("ai_signature must be a lowercase SHA-256 digest")
-    canonical = json.dumps(
-        {
-            "binding_version": AI_SUCCESS_BINDING_VERSION,
-            "ai_signature": ai_signature,
-            "output": output.to_dict(),
-            "receipt": receipt.to_dict(),
-        },
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(canonical).hexdigest()
-
-
-def build_receipt_download_filename(
-    receipt: InsightGenerationReceiptV4,
-) -> str:
-    """Return a short, path-safe filename derived only from analysis identity."""
-
-    safe_id = re.sub(r"[^A-Za-z0-9]", "", receipt.analysis_signature)[:12]
-    if not safe_id:
-        safe_id = "unknown"
-    return f"{RECEIPT_DOWNLOAD_PREFIX}{safe_id}{RECEIPT_DOWNLOAD_SUFFIX}"
-
-
-def build_receipt_json_bytes(receipt: InsightGenerationReceiptV4) -> bytes:
-    """Serialize only the explicit public Receipt contract as UTF-8 JSON."""
-
-    if not isinstance(receipt, InsightGenerationReceiptV4):
-        raise TypeError("receipt must be InsightGenerationReceiptV4")
-    return json.dumps(
-        receipt.to_dict(),
-        ensure_ascii=False,
-        allow_nan=False,
-        sort_keys=True,
-        indent=2,
-    ).encode("utf-8")
 
 
 def _truncate_utf8(text: str, max_bytes: int) -> str:
@@ -561,9 +357,6 @@ def _initialize_session_state() -> None:
     for key, value in _SESSION_DEFAULTS.items():
         if key not in st.session_state:
             st.session_state[key] = value
-    for key in _LEGACY_AI_ERROR_KEYS:
-        if key in st.session_state:
-            del st.session_state[key]
 
 
 def _clear_analysis_state() -> None:
@@ -571,26 +364,9 @@ def _clear_analysis_state() -> None:
         st.session_state[key] = value
 
 
-def _clear_ai_success_state() -> None:
-    for key in (
-        "ai_output",
-        "ai_receipt",
-        "ai_signature",
-        "ai_success_binding",
-    ):
-        st.session_state[key] = None
-
-
 def _clear_ai_state() -> None:
-    _clear_ai_success_state()
-    st.session_state.ai_failure = None
-    for key in _LEGACY_AI_ERROR_KEYS:
-        if key in st.session_state:
-            del st.session_state[key]
-
-
-def _clear_ai_failure() -> None:
-    st.session_state.ai_failure = None
+    st.session_state.ai_generation = None
+    st.session_state.ai_error = None
 
 
 def _sync_analysis_signature(current_signature: str | None) -> None:
@@ -600,182 +376,33 @@ def _sync_analysis_signature(current_signature: str | None) -> None:
         _clear_ai_state()
 
 
-def _ai_error_message(code: str) -> str:
-    if type(code) is not str or re.fullmatch(r"[A-Z][A-Z0-9_]*", code) is None:
-        return _AI_UNEXPECTED_ERROR_MESSAGE
-    if code in _AI_RESULT_REJECTION_CODES:
-        return _AI_GENERIC_REJECTION_MESSAGE
-    return _AI_ERROR_MESSAGES.get(code, _AI_UNEXPECTED_ERROR_MESSAGE)
+def _ai_error_message(code: object) -> str:
+    if isinstance(code, str):
+        return ui.AI_ERROR_MESSAGES.get(code, ui.AI_ERROR_FALLBACK)
+    return ui.AI_ERROR_FALLBACK
 
 
-def _log_unexpected_ai_error(stage: str, error: Exception) -> None:
-    """Log only fixed AI failure metadata, never exception content/traceback."""
-
-    safe_stage = stage if stage in _AI_LOG_STAGES else "unknown"
-    logger.error(
-        "Unexpected AI operation failure at stage=%s; exception_type=%s",
-        safe_stage,
-        type(error).__name__,
-    )
-
-
-def _store_ai_failure(
-    code: str,
-    *,
-    signature: str,
-    execution_result: RetryExecutionResult | None,
-) -> None:
-    st.session_state.ai_failure = AiGenerationFailure(
-        signature=signature,
-        error_code=code,
-        execution_result=execution_result,
-    )
-
-
-def _is_valid_ai_failure(value: object, *, signature: str) -> bool:
-    """Validate an App-local failure across Streamlit script reruns."""
-
-    if type(value).__name__ != AiGenerationFailure.__name__:
-        return False
-    failure_fields = getattr(type(value), "__dataclass_fields__", None)
-    if not isinstance(failure_fields, dict) or set(failure_fields) != {
-        "signature",
-        "error_code",
-        "execution_result",
-    }:
-        return False
+def _run_ai_generation(result: PipelineResult) -> None:
     try:
-        failure_signature = value.signature  # type: ignore[attr-defined]
-        error_code = value.error_code  # type: ignore[attr-defined]
-        execution_result = value.execution_result  # type: ignore[attr-defined]
-    except Exception:
-        return False
-    if failure_signature != signature:
-        return False
-    if (
-        not isinstance(error_code, str)
-        or re.fullmatch(r"[A-Z][A-Z0-9_]*", error_code) is None
-    ):
-        return False
-    if execution_result is None:
-        return True
-    if not isinstance(execution_result, RetryExecutionResult):
-        return False
-    if execution_result.status == FAILED:
-        return execution_result.error_code == error_code
-    if execution_result.status == SUCCEEDED:
-        return error_code in _POST_EXECUTION_AI_FAILURE_CODES
-    return False
-
-
-def _utc_now() -> datetime:
-    """Return the receipt-generation clock through a private test seam."""
-
-    return datetime.now(timezone.utc)
-
-
-def _run_ai_generation(
-    result: PipelineResult,
-    *,
-    signature: str,
-    analysis_signature: str,
-    group_by: list[str] | None,
-) -> None:
-    execution_result: RetryExecutionResult | None = None
-    stage = "context_build"
-    try:
-        context = build_insight_context(result)
-        stage = "provider_setup"
         provider = DeepSeekInsightProvider()
-        stage = "retry_execution"
-        candidate = execute_insight_generation_with_retry(
-            context,
-            provider=provider,
-        )
-        if not isinstance(candidate, RetryExecutionResult):
-            raise TypeError(
-                "execute_insight_generation_with_retry() returned an invalid "
-                "result type"
-            )
-        execution_result = candidate
-        if execution_result.status == FAILED:
-            error_code = execution_result.error_code
-            if not isinstance(error_code, str) or not error_code.strip():
-                raise TypeError(
-                    "A failed Retry Execution result requires an error code"
-                )
-            _store_ai_failure(
-                error_code,
-                signature=signature,
-                execution_result=execution_result,
-            )
-            return
-        if execution_result.status != SUCCEEDED:
-            raise TypeError("Retry Execution returned an unknown status")
-        output = execution_result.output
-        if not isinstance(output, InsightOutput):
-            raise TypeError(
-                "A succeeded Retry Execution result requires InsightOutput"
-            )
-        stage = "receipt_build"
-        generated_at = _utc_now().isoformat()
-        receipt = build_insight_receipt_v4(
-            generated_at=generated_at,
-            analysis_signature=analysis_signature,
-            group_by=group_by,
-            context=context,
-            execution_result=execution_result,
-        )
-        stage = "success_binding"
-        success_binding = build_ai_success_binding(
-            output,
-            receipt,
-            signature,
-        )
-        artifacts = AiGenerationArtifacts(
-            output=output,
-            receipt=receipt,
-            success_binding=success_binding,
-        )
-    except (
-        InsightContextError,
-        InsightPromptError,
-        InsightProviderError,
-        InsightOutputError,
-        RetryExecutionError,
-        InsightReceiptV4Error,
-        LogicalGenerationCostError,
-    ) as error:
-        code = error.code if isinstance(error.code, str) else "UNEXPECTED_AI_ERROR"
-        _store_ai_failure(
-            code,
-            signature=signature,
-            execution_result=execution_result,
-        )
-    except Exception as error:
-        _log_unexpected_ai_error(stage, error)
-        _store_ai_failure(
-            "UNEXPECTED_AI_ERROR",
-            signature=signature,
-            execution_result=execution_result,
-        )
+        context = build_insight_context(result)
+        generation = generate_insight_with_metadata(context, provider=provider)
+    except (InsightContextError, InsightPromptError, InsightOutputError, InsightProviderError) as error:
+        st.session_state.ai_error = _ai_error_message(error.code)
+    except Exception:
+        # Provider exceptions can contain request data or credentials.
+        logger.error("Unexpected failure during AI insight generation")
+        st.session_state.ai_error = ui.AI_ERROR_FALLBACK
     else:
-        st.session_state.update(
-            {
-                "ai_output": artifacts.output,
-                "ai_receipt": artifacts.receipt,
-                "ai_signature": signature,
-                "ai_success_binding": artifacts.success_binding,
-                "ai_failure": None,
-            }
-        )
+        st.session_state.ai_generation = generation
+        st.session_state.ai_error = None
 
 
 def _format_ai_scope(scope: dict[str, Any]) -> str:
     if not scope:
         return ui.GROUP_LABELS["Overall"]
     return " · ".join(
-        f"{_SCOPE_LABELS.get(dimension, ui.TEXT['unknown_field'])}: "
+        f"{ui.SCOPE_LABELS.get(dimension, ui.TEXT['unknown_field'])}: "
         f"{value}"
         for dimension, value in scope.items()
     )
@@ -812,333 +439,37 @@ def _render_ai_output(output: InsightOutput) -> None:
             st.markdown(f"- {limitation}")
 
 
-def _format_receipt_time(generated_at: str) -> str:
-    parsed = datetime.fromisoformat(generated_at)
-    return parsed.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-
-
-def _format_receipt_group_by(group_by: tuple[str, ...]) -> str:
-    if not group_by:
-        return ui.GROUP_LABELS["Overall"]
-    return " · ".join(
-        _SCOPE_LABELS.get(dimension, ui.TEXT["unknown_field"])
-        for dimension in group_by
-    )
-
-
-def _provider_display_name(provider: str) -> str:
-    return _PROVIDER_DISPLAY_NAMES.get(provider, provider)
-
-
-def _format_cost_amount(value: Any) -> str:
-    """Render one Receipt Decimal exactly without float conversion or rounding."""
-
-    return format(value, "f")
-
-
-def _render_cost_details(
-    cost: CostAuditMetadata,
-    logical_cost: LogicalGenerationCostSummary,
-) -> None:
-    """Render final-attempt and logical-generation cost truth separately."""
-    st.markdown("**" + ui.TEXT["cost"] + "**")
-    st.caption(ui.TEXT["pricing"].format(
-        time=cost.pricing_reference_at, policy=cost.pricing_policy_version,
-    ))
-    if cost.status == UNAVAILABLE:
-        st.caption(ui.TEXT["final_cost_unavailable"])
-        st.caption(_COST_UNAVAILABLE_MESSAGES.get(
-            cost.unavailable_reason or "", ui.TEXT["cost_unavailable"],
-        ))
-    elif cost.status == AVAILABLE and cost.estimate is not None:
-        estimate = cost.estimate
-        st.caption(ui.TEXT["final_cost"].format(
-            amount=_format_cost_amount(estimate.total_estimated_cost),
-        ))
-        st.caption(ui.TEXT["pricing_tier"].format(
-            tier=ui.PRICING_TIER_LABELS.get(estimate.pricing_tier, ui.TEXT["unknown_state"]),
-        ))
-        st.caption(ui.TEXT["cost_parts"].format(
-            hit=_format_cost_amount(estimate.prompt_cache_hit_cost),
-            miss=_format_cost_amount(estimate.prompt_cache_miss_cost),
-            completion=_format_cost_amount(estimate.completion_cost),
-        ))
-    else:
-        raise ValueError("Invalid Cost Audit presentation state")
-
-    if logical_cost.status == FULLY_ESTIMATED:
-        amount = logical_cost.estimated_total_cost_usd
-        if amount is None:
-            raise ValueError("Logical-generation total is missing")
-        st.caption(ui.TEXT["logical_total"].format(amount=_format_cost_amount(amount)))
-    elif logical_cost.status == LOGICAL_COST_UNAVAILABLE:
-        st.caption(ui.TEXT["logical_unavailable"])
-    elif logical_cost.status == UNKNOWN_TOTAL:
-        st.caption(ui.TEXT["logical_unknown"])
-    else:
-        raise ValueError("Invalid logical-generation cost presentation state")
-    st.caption(_COST_ESTIMATE_DISCLAIMER)
-
-
-def _is_valid_ai_success_binding(
-    binding: object,
-    *,
-    output: InsightOutput,
-    receipt: InsightGenerationReceiptV4,
-    ai_signature: str,
-) -> bool:
-    if (
-        not isinstance(binding, str)
-        or re.fullmatch(r"[0-9a-f]{64}", binding) is None
-    ):
-        return False
-    try:
-        expected = build_ai_success_binding(output, receipt, ai_signature)
-    except Exception as error:
-        _log_unexpected_ai_error("success_binding", error)
-        return False
-    return hmac.compare_digest(binding, expected)
-
-
-def _current_ai_pair(
-    *,
-    ai_signature: str,
-    analysis_signature: str,
-    group_by: list[str] | None,
-) -> tuple[InsightOutput | None, InsightGenerationReceiptV4 | None]:
-    output = st.session_state.ai_output
-    receipt = st.session_state.ai_receipt
-    signature = st.session_state.ai_signature
-    binding = st.session_state.ai_success_binding
-    if (
-        output is None
-        and receipt is None
-        and signature is None
-        and binding is None
-    ):
-        return None, None
-    expected_group_by = () if group_by is None else tuple(group_by)
-    if (
-        not isinstance(output, InsightOutput)
-        or not isinstance(receipt, InsightGenerationReceiptV4)
-        or signature != ai_signature
-        or receipt.analysis_signature != analysis_signature
-        or receipt.group_by != expected_group_by
-        or receipt.version != INSIGHT_RECEIPT_V4_VERSION
-        or receipt.context_version != INSIGHT_CONTEXT_VERSION
-        or receipt.prompt_version != INSIGHT_PROMPT_VERSION
-        or receipt.output_version != INSIGHT_OUTPUT_VERSION
-        or receipt.provider != DEEPSEEK_PROVIDER_NAME
-        or receipt.model != DEEPSEEK_MODEL
-        or receipt.priority_insight_count != len(output.priority_insights)
-        or not isinstance(receipt.cost, CostAuditMetadata)
-    ):
-        _clear_ai_success_state()
-        return None, None
-    if not _is_valid_ai_success_binding(
-        binding,
-        output=output,
-        receipt=receipt,
-        ai_signature=signature,
-    ):
-        _clear_ai_success_state()
-        return None, None
-    return output, receipt
-
-
-def _render_retry_provenance(
-    source: RetryExecutionResult | InsightGenerationReceiptV4,
-) -> None:
-    attempts = source.attempt_audit.attempts
-    delays = source.delay_audit.records
-    status = source.status if isinstance(source, RetryExecutionResult) else SUCCEEDED
-    st.markdown("**" + ui.TEXT["retry"] + "**")
-    st.caption(ui.TEXT["execution_counts"].format(
-        status=ui.EXECUTION_STATUS_LABELS[status],
-        attempts=len(attempts), delays=len(delays),
-    ))
-    st.caption(ui.TEXT["retry_policies"].format(
-        retry=source.attempt_audit.retry_policy_version,
-        delay=source.delay_audit.policy_version,
-    ))
-    if delays:
-        requested = " · ".join(
-            ui.TEXT["delay_item"].format(
-                attempt=record.after_attempt_number,
-                milliseconds=record.delay_decision.delay_ms,
-            )
-            for record in delays
-        )
-        st.caption(ui.TEXT["requested_delays"].format(items=requested))
-
-
-def _render_failure_details(failure: AiGenerationFailure) -> None:
-    with st.expander(ui.TEXT['failure_details']):
-        st.caption(ui.TEXT["failure_code"].format(code=failure.error_code))
-        result = failure.execution_result
-        if result is None:
-            st.caption(
-                ui.TEXT['no_attempt_audit']
-            )
-            return
-        _render_retry_provenance(result)
-        if result.status == SUCCEEDED:
-            st.caption(
-                ui.TEXT['post_execution_failure']
-            )
-
-
-def _render_generation_details(receipt: InsightGenerationReceiptV4) -> None:
-    with st.expander(ui.TEXT["generation_details"]):
-        st.caption(ui.TEXT["generated_at"].format(
-            time=_format_receipt_time(receipt.generated_at),
-            analysis_id=receipt.analysis_signature[:12],
-        ))
-        st.markdown(ui.TEXT["provider_model"].format(
-            provider=_provider_display_name(receipt.provider), model=receipt.model,
-        ))
-        st.markdown(ui.TEXT["analysis_scope"].format(
-            scope=_format_receipt_group_by(receipt.group_by),
-        ))
-        st.caption(ui.TEXT["versions"].format(
-            context=receipt.context_version, prompt=receipt.prompt_version,
-            output=receipt.output_version, receipt=receipt.version,
-        ))
-        st.caption(ui.TEXT["generation_counts"].format(
-            metrics=receipt.metric_record_count,
-            diagnostics=receipt.diagnostic_signal_count,
-            insights=receipt.priority_insight_count,
-        ))
-        st.markdown("**" + ui.TEXT["usage"] + "**")
-        usage = receipt.usage
-        if usage is None:
-            st.caption(ui.TEXT["no_usage"])
-        else:
-            st.caption(ui.TEXT["usage_counts"].format(
-                prompt=usage.prompt_tokens, completion=usage.completion_tokens,
-                total=usage.total_tokens,
-            ))
-            optional_usage: list[str] = []
-            if usage.prompt_cache_hit_tokens is not None:
-                optional_usage.append(ui.TEXT["cache_hit_tokens"].format(
-                    count=usage.prompt_cache_hit_tokens,
-                ))
-            if usage.prompt_cache_miss_tokens is not None:
-                optional_usage.append(ui.TEXT["cache_miss_tokens"].format(
-                    count=usage.prompt_cache_miss_tokens,
-                ))
-            if usage.reasoning_tokens is not None:
-                optional_usage.append(ui.TEXT["reasoning_tokens"].format(
-                    count=usage.reasoning_tokens,
-                ))
-            if optional_usage:
-                st.caption(" · ".join(optional_usage))
-        _render_retry_provenance(receipt)
-        _render_cost_details(receipt.cost, receipt.logical_generation_cost)
-        st.download_button(
-            ui.TEXT["download_receipt"],
-            data=build_receipt_json_bytes(receipt),
-            file_name=build_receipt_download_filename(receipt),
-            mime=RECEIPT_DOWNLOAD_MIME,
-            key="download_ai_receipt",
-        )
-
-
-def _render_generation_details_safely(
-    receipt: InsightGenerationReceiptV4,
-) -> None:
-    """Render passive audit UI without exposing unexpected exception details."""
-
-    try:
-        _render_generation_details(receipt)
-    except Exception as error:
-        _log_unexpected_ai_error("render", error)
-        st.error(_AI_AUDIT_PRESENTATION_ERROR_MESSAGE)
-
-
-def _render_ai_section(
-    result: PipelineResult,
-    current_signature: str,
-    group_by: list[str] | None,
-) -> None:
+def _render_ai_section(result: PipelineResult) -> None:
     if result.status is not PipelineStatus.SUCCESS:
         return
-    if st.session_state.analysis_signature != current_signature:
-        return
 
-    ai_signature = build_ai_signature(current_signature)
-    has_ai_success_state = any(
-        st.session_state[key] is not None
-        for key in (
-            "ai_output",
-            "ai_receipt",
-            "ai_signature",
-            "ai_success_binding",
-        )
-    )
-    if has_ai_success_state and st.session_state.ai_signature != ai_signature:
-        _clear_ai_success_state()
+    st.subheader(ui.TEXT["ai"])
+    st.caption(ui.TEXT["ai_help"])
+    st.info(ui.TEXT["ai_limits"])
 
-    failure = st.session_state.ai_failure
-    if failure is not None and not _is_valid_ai_failure(
-        failure,
-        signature=ai_signature,
-    ):
-        _clear_ai_failure()
-
-    current_output, current_receipt = _current_ai_pair(
-        ai_signature=ai_signature,
-        analysis_signature=current_signature,
-        group_by=group_by,
-    )
-
-    st.subheader(ui.TEXT['ai'])
-    st.caption(
-        ui.TEXT['ai_help']
-    )
-    st.info(
-        ui.TEXT['ai_limits']
-    )
-
-    button_label = (
-        ui.TEXT['regenerate']
-        if current_output is not None
-        else ui.TEXT['generate']
-    )
-    generate_clicked = st.button(button_label, key="generate_ai_insights")
-    if generate_clicked:
-        with st.spinner(ui.TEXT['generating']):
-            _run_ai_generation(
-                result,
-                signature=ai_signature,
-                analysis_signature=current_signature,
-                group_by=group_by,
-            )
-        if st.session_state.ai_failure is None:
+    generation = st.session_state.ai_generation
+    label = ui.TEXT["generate"] if generation is None else ui.TEXT["regenerate"]
+    if st.button(label, key="generate_ai_insights"):
+        with st.spinner(ui.TEXT["generating"]):
+            _run_ai_generation(result)
+        if st.session_state.ai_error is None:
             st.rerun()
 
-    failure = st.session_state.ai_failure
-    current_output, current_receipt = _current_ai_pair(
-        ai_signature=ai_signature,
-        analysis_signature=current_signature,
-        group_by=group_by,
-    )
-    if failure is not None and _is_valid_ai_failure(
-        failure,
-        signature=ai_signature,
-    ):
-        ai_error_message = _ai_error_message(failure.error_code)
-        if current_output is not None:
-            st.warning(
-                ui.TEXT["regeneration_failed"].format(message=ai_error_message)
-            )
+    error_message = st.session_state.ai_error
+    if error_message:
+        if generation is None:
+            st.error(error_message)
         else:
-            st.error(ai_error_message)
-        _render_failure_details(failure)
-    if current_output is not None:
-        _render_ai_output(current_output)
-        if current_receipt is not None:
-            _render_generation_details_safely(current_receipt)
+            st.warning(ui.TEXT["regeneration_failed"].format(message=error_message))
+    if generation is not None:
+        _render_ai_output(generation.output)
+        usage = generation.usage
+        if usage is not None:
+            st.caption(ui.TEXT["usage_counts"].format(
+                prompt=usage.prompt_tokens,
+                completion=usage.completion_tokens,
+                total=usage.total_tokens,
+            ))
 
 
 def _render_error(error: ErrorPresentation) -> None:
@@ -1461,8 +792,7 @@ def main() -> None:
     _render_metrics(result, group_label)
     _render_diagnostics(result)
     _render_download()
-    if current_signature is not None:
-        _render_ai_section(result, current_signature, group_by)
+    _render_ai_section(result)
 
 
 if __name__ == "__main__":

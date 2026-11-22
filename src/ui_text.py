@@ -36,7 +36,7 @@ TEXT = {
     "generate": "生成 AI 洞察",
     "regenerate": "重新生成 AI 洞察",
     "generating": "正在生成 AI 洞察…",
-    "ai_help": "可选的 DeepSeek 辅助解读，仅在点击下方按钮后生成。",
+    "ai_help": "点击生成会将本次分析的分组指标和诊断信号发送给 DeepSeek，可能产生 API 费用。",
     "ai_limits": "AI 根据已有指标和诊断信号提供解读。诊断信号属于观察，可能原因属于假设，核查建议用于进一步调查，不代表已证实的原因或必然有效的措施。",
     "summary": "运营摘要",
     "priority": "重点洞察",
@@ -48,40 +48,7 @@ TEXT = {
     "checks": "建议核查",
     "limitations": "分析局限",
     "regeneration_failed": "本次重新生成失败，当前继续展示上一次成功生成的 AI 洞察。{message}",
-    "generation_details": "生成详情",
-    "failure_details": "本次生成失败详情",
-    "failure_code": "错误代码：{code}",
-    "no_attempt_audit": "未返回完整的重试执行结果，详细调用审计不可用。",
-    "post_execution_failure": "Provider 调用已成功完成，但后续应用处理失败。",
-    "audit_unavailable": "生成详情暂时不可用。",
-    "generated_at": "生成时间：{time} · 分析标识：{analysis_id}",
-    "provider_model": "**Provider：** {provider} · **模型：** `{model}`",
-    "analysis_scope": "**分析范围：** {scope}",
-    "versions": "上下文版本 v{context} · 提示词版本 v{prompt} · 输出版本 v{output} · 凭证版本 v{receipt}",
-    "generation_counts": "指标分组数：{metrics:,} · 诊断信号数：{diagnostics:,} · 重点洞察数：{insights:,}",
-    "usage": "Provider 报告的 Token 用量",
-    "no_usage": "本次生成的 Provider Token 用量不可用。",
-    "usage_counts": "输入 Token：{prompt:,} · 输出 Token：{completion:,} · Token 总数：{total:,}",
-    "cache_hit_tokens": "输入缓存命中 Token：{count:,}",
-    "cache_miss_tokens": "输入缓存未命中 Token：{count:,}",
-    "reasoning_tokens": "推理 Token：{count:,}",
-    "cost": "成本估算",
-    "pricing": "定价参考时间：{time} · 定价策略版本：{policy}",
-    "final_cost_unavailable": "最终成功调用的成本估算不可用。",
-    "cost_unavailable": "成本估算不可用。",
-    "final_cost": "最终成功调用估算成本（USD）：${amount}",
-    "pricing_tier": "计价时段：{tier}",
-    "cost_parts": "输入缓存命中成本：${hit} · 输入缓存未命中成本：${miss} · 输出成本：${completion}",
-    "logical_total": "本次逻辑生成估算总成本（USD）：${amount}",
-    "logical_unavailable": "最终成功调用的成本估算不可用，因此无法估算本次逻辑生成总成本。",
-    "logical_unknown": "由于先前失败调用的成本未知，本次逻辑生成总成本未知。",
-    "cost_disclaimer": "成本根据已记录的 Provider Token 用量和保存的定价快照估算，不代表 Provider 最终账单。",
-    "retry": "调用与重试记录",
-    "execution_counts": "已完成的执行结果状态：{status} · Provider 调用尝试次数：{attempts:,} · 已完成的重试等待衔接次数：{delays:,}",
-    "retry_policies": "重试策略版本：{retry} · 等待策略版本：{delay}",
-    "delay_item": "第 {attempt} 次调用尝试后，请求等待 {milliseconds:,} ms",
-    "requested_delays": "重试请求等待记录：{items}",
-    "download_receipt": "下载生成凭证（JSON）",
+    "usage_counts": "DeepSeek 报告的用量 · 输入 {prompt:,} Token · 输出 {completion:,} Token · 合计 {total:,} Token",
     "error_code": "错误代码：`{code}`",
     "error_stage": " · 处理阶段：`{stage}`",
     "unknown_field": "未识别字段",
@@ -147,20 +114,6 @@ FIELD_LABELS = {
 TABLE_CODE_LABELS = {"validation": "校验代码", "diagnostics": "诊断代码"}
 LEVEL_LABELS = {"Fatal": "致命错误", "Error": "错误", "Warning": "警告"}
 CONFIDENCE_LABELS = {"low": "低", "medium": "中", "high": "高"}
-EXECUTION_STATUS_LABELS = {"succeeded": "成功", "failed": "失败"}
-COST_STATUS_LABELS = {
-    "available": "成本估算可用",
-    "fully_estimated": "本次逻辑生成总成本已完整估算",
-    "unknown_total": "本次逻辑生成总成本未知",
-    "unavailable": "成本估算不可用",
-}
-PRICING_TIER_LABELS = {"peak": "高峰时段（peak）", "off_peak": "非高峰时段（off_peak）"}
-COST_UNAVAILABLE_MESSAGES = {
-    "USAGE_UNAVAILABLE": "Provider Token 用量不可用。",
-    "CACHE_BREAKDOWN_UNAVAILABLE": "输入缓存命中与未命中明细不可用。",
-    "POLICY_NOT_EFFECTIVE": "定价快照不适用于该参考时间。",
-    "POLICY_NOT_APPLICABLE": "定价快照不适用于该 Provider 或模型。",
-}
 VALIDATION_MESSAGES = {
     "MISSING_REQUIRED_COLUMN": "缺少必填列：{field}",
     "MISSING_REQUIRED_VALUE": "必填字段为空",
@@ -224,9 +177,6 @@ AI_ERROR_MESSAGES = {
     "INSIGHT_CONTEXT_TOO_LARGE": "当前分析内容超出 AI 输入大小限制。",
     "PROMPT_TOO_LARGE": "当前分析内容超出 AI 输入大小限制。",
     "NON_FINITE_INSIGHT_VALUE": "当前分析包含无法安全处理的数值。",
-    "INVALID_RECEIPT_V4_INPUT": "未能为 AI 洞察保存有效的生成凭证。",
-    "INVALID_LOGICAL_GENERATION_COST": "未能安全记录本次逻辑生成的成本信息。",
-    "INVALID_RETRY_EXECUTION": "AI 重试执行未能安全完成。",
     "UNEXPECTED_AI_ERROR": AI_ERROR_FALLBACK,
 }
 ERROR_FALLBACK = "未能完成本次分析。"

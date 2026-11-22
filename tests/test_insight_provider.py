@@ -73,16 +73,16 @@ def valid_payload(context: InsightContext) -> dict[str, object]:
     )
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "One diagnostic pattern warrants review.",
+        "executive_summary": "一个诊断模式值得核查。",
         "priority_insights": [
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": "The supplied context contains this signal.",
+                "observation": "提供的上下文包含该信号。",
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [
-                    "A possible association may warrant investigation."
+                    "可能存在关联，仍有待核实。"
                 ],
-                "recommended_checks": ["Review the supporting operational inputs."],
+                "recommended_checks": ["核查相关运营输入。"],
                 "confidence": "medium",
             }
         ],
@@ -101,7 +101,7 @@ def raw_response_at_size(
     unicode_prefix: str,
 ) -> str:
     adjusted = deepcopy(payload)
-    adjusted["executive_summary"] = f"Summary {unicode_prefix}"
+    adjusted["executive_summary"] = f"摘要 {unicode_prefix}"
     document = raw_json(adjusted, separators=(",", ":"))
     remaining = target_bytes - len(document.encode("utf-8"))
     assert remaining >= 0
@@ -132,13 +132,13 @@ def output_payload_at_size(
         priorities.append(
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": "x",
+                "observation": "中",
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [
-                    "x" for _ in range(MAX_EXPLANATIONS_PER_INSIGHT)
+                    "中" for _ in range(MAX_EXPLANATIONS_PER_INSIGHT)
                 ],
                 "recommended_checks": [
-                    "x" for _ in range(MAX_CHECKS_PER_INSIGHT)
+                    "中" for _ in range(MAX_CHECKS_PER_INSIGHT)
                 ],
                 "confidence": "medium",
             }
@@ -146,9 +146,9 @@ def output_payload_at_size(
     assert len(priorities) == MAX_PRIORITY_INSIGHTS
     payload: dict[str, object] = {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "x",
+        "executive_summary": "中",
         "priority_insights": priorities,
-        "overall_limitations": ["x" for _ in range(MAX_OVERALL_LIMITATIONS)],
+        "overall_limitations": ["中" for _ in range(MAX_OVERALL_LIMITATIONS)],
     }
     slots: list[tuple[Any, str | int, int]] = [
         (payload, "executive_summary", MAX_EXECUTIVE_SUMMARY_CHARS)
@@ -209,7 +209,7 @@ def empty_context() -> InsightContext:
 def conservative_empty_payload() -> dict[str, object]:
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "No diagnostic signals were supplied.",
+        "executive_summary": "未提供诊断信号。",
         "priority_insights": [],
         "overall_limitations": [],
     }
@@ -234,6 +234,41 @@ def test_sample_mock_provider_e2e_and_public_contract(
     assert provider.last_prompt == expected_prompt  # type: ignore[attr-defined]
     assert provider.response == response  # type: ignore[attr-defined]
     assert sample_context.to_dict() == context_before
+
+
+def test_provider_path_rejects_english_v2_without_exposing_narrative(
+    sample_context: InsightContext,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    secret = "SECRET_ENGLISH_PROVIDER_OUTPUT_123"
+    payload = valid_payload(sample_context)
+    payload["executive_summary"] = secret
+    provider = MockInsightProvider(raw_json(payload))
+
+    with pytest.raises(InsightOutputError) as caught:
+        generate_insight(sample_context, provider=provider)
+
+    assert caught.value.code == INVALID_INSIGHT_OUTPUT
+    assert provider.call_count == 1
+    assert secret not in str(caught.value)
+    assert secret not in repr(caught.value)
+    assert secret not in caplog.text
+
+
+def test_provider_path_rejects_chinese_v1_without_version_dispatch(
+    sample_context: InsightContext,
+) -> None:
+    payload = valid_payload(sample_context)
+    payload["version"] = "1"
+
+    with pytest.raises(InsightOutputError) as caught:
+        generate_insight(
+            sample_context,
+            provider=MockInsightProvider(raw_json(payload)),
+        )
+
+    assert caught.value.code == INVALID_INSIGHT_OUTPUT
+    assert "payload.version" in caught.value.message
 
 
 def test_metadata_api_returns_validated_output_and_exact_usage(
@@ -1159,7 +1194,7 @@ def test_empty_context_mock_e2e() -> None:
     output = generate_insight(context, provider=provider)
 
     assert output.priority_insights == ()
-    assert output.executive_summary == "No diagnostic signals were supplied."
+    assert output.executive_summary == "未提供诊断信号。"
     assert provider.call_count == 1
     assert context.to_dict() == before
 

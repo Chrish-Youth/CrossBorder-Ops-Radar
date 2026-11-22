@@ -137,18 +137,18 @@ def valid_raw_response(context: InsightContext) -> str:
     )
     return json.dumps(
         {
-            "version": "1",
-            "executive_summary": "One diagnostic pattern warrants review.",
+            "version": "2",
+            "executive_summary": "一个诊断模式值得核查。",
             "priority_insights": [
                 {
                     "scope": signal["group"],
-                    "observation": "The supplied context contains this signal.",
+                    "observation": "提供的上下文包含该信号。",
                     "evidence_codes": [signal["code"]],
                     "possible_explanations": [
-                        "A possible association may warrant investigation."
+                        "可能存在关联，仍有待核实。"
                     ],
                     "recommended_checks": [
-                        "Review the supporting operational inputs."
+                        "核查相关运营输入。"
                     ],
                     "confidence": "medium",
                 }
@@ -640,6 +640,43 @@ def test_output_contract_failure_is_a_terminal_handled_attempt(
     assert decision is not None
     assert decision.action == DO_NOT_RETRY
     assert decision.reason == ERROR_NOT_RETRYABLE
+
+
+def test_language_invalid_output_is_one_terminal_attempt_with_unknown_cost(
+    sample_context: InsightContext,
+) -> None:
+    secret = "SECRET_ENGLISH_PROVIDER_OUTPUT_123"
+    payload = json.loads(valid_raw_response(sample_context))
+    payload["executive_summary"] = secret
+    provider = ScriptedProvider(
+        ProviderGeneration(
+            raw_text=json.dumps(payload, ensure_ascii=False),
+            usage=complete_usage(),
+        )
+    )
+    sleeper = RecordingSleeper()
+
+    result = execute(sample_context, provider, sleeper=sleeper)
+
+    assert result.status == FAILED
+    assert result.error_code == INVALID_INSIGHT_OUTPUT
+    assert result.output is None
+    assert result.final_usage is None
+    assert result.final_cost is None
+    assert provider.call_count == 1
+    assert len(result.attempt_audit.attempts) == 1
+    assert sleeper.calls == []
+    assert result.delay_audit.records == ()
+    attempt = result.attempt_audit.attempts[0]
+    assert attempt.status == FAILED
+    assert attempt.error_code == INVALID_INSIGHT_OUTPUT
+    assert attempt.usage is None
+    assert attempt.cost is None
+    assert attempt.retry_decision is not None
+    assert attempt.retry_decision.action == DO_NOT_RETRY
+    assert attempt.retry_decision.reason == ERROR_NOT_RETRYABLE
+    assert secret not in repr(result)
+    assert secret not in repr(result.attempt_audit.to_dict())
 
 
 def test_prompt_contract_exception_is_an_internal_hard_failure(
@@ -2067,17 +2104,6 @@ def test_executor_has_delay_but_no_network_app_or_receipt_integration() -> None:
     assert "requests" not in imports
     assert "httpx" not in imports
     assert "openai" not in imports
-
-
-def test_streamlit_app_routes_generation_through_retry_executor_only() -> None:
-    app_source = (Path(__file__).parents[1] / "app.py").read_text(
-        encoding="utf-8"
-    )
-
-    assert "from src.insight_retry_execution import" in app_source
-    assert "execute_insight_generation_with_retry(" in app_source
-    assert "generate_insight_with_metadata(" not in app_source
-    assert "build_cost_audit_metadata(" not in app_source
 
 
 def test_default_policy_budget_remains_two() -> None:

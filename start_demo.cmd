@@ -19,42 +19,10 @@ if not exist ".venv\Scripts\python.exe" (
 
 echo [OK] Python virtual environment found.
 
-if not defined DEEPSEEK_API_KEY (
-    for /f "usebackq delims=" %%K in (`powershell.exe -NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY', 'User')"`) do set "DEEPSEEK_API_KEY=%%K"
-)
-
 if /i "%~1"=="--check" (
-    if defined DEEPSEEK_API_KEY (
-        echo [OK] DeepSeek API key is available to this process.
-    ) else (
-        echo [WARN] DeepSeek API key is unavailable.
-    )
     echo [OK] Launcher check completed. Streamlit was not started.
     exit /b 0
 )
-
-if not defined DEEPSEEK_API_KEY (
-    echo [WARN] DeepSeek API key is unavailable.
-    echo [SETUP] Paste it once at the secure prompt below.
-    echo         The key will not be displayed or written into this script.
-    echo.
-    powershell.exe -NoProfile -Command "$secureKey = Read-Host 'DeepSeek API key' -AsSecureString; $plainKey = [System.Net.NetworkCredential]::new('', $secureKey).Password; if ([string]::IsNullOrWhiteSpace($plainKey)) { exit 1 }; [Environment]::SetEnvironmentVariable('DEEPSEEK_API_KEY', $plainKey, 'User'); $plainKey = $null; $secureKey.Dispose()"
-    if errorlevel 1 (
-        echo.
-        echo [ERROR] No API key was saved. Streamlit was not started.
-        pause
-        exit /b 1
-    )
-    for /f "usebackq delims=" %%K in (`powershell.exe -NoProfile -NonInteractive -Command "[Environment]::GetEnvironmentVariable('DEEPSEEK_API_KEY', 'User')"`) do set "DEEPSEEK_API_KEY=%%K"
-)
-
-if not defined DEEPSEEK_API_KEY (
-    echo [ERROR] DeepSeek API key could not be loaded.
-    pause
-    exit /b 1
-)
-
-echo [OK] DeepSeek API key is available to this process.
 
 set "STREAMLIT_BROWSER_GATHER_USAGE_STATS=false"
 

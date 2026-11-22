@@ -212,16 +212,16 @@ def valid_payload(context: InsightContext) -> dict[str, object]:
     )
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "One diagnostic pattern warrants review.",
+        "executive_summary": "一个诊断模式值得核查。",
         "priority_insights": [
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": "The supplied context contains this signal.",
+                "observation": "提供的上下文包含该信号。",
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [
-                    "A possible association may warrant investigation."
+                    "可能存在关联，仍有待核实。"
                 ],
-                "recommended_checks": ["Review the supporting inputs."],
+                "recommended_checks": ["核查相关输入。"],
                 "confidence": "medium",
             }
         ],
@@ -247,21 +247,21 @@ def oversized_valid_payload(context: InsightContext) -> dict[str, object]:
 
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "E" * 1_500,
+        "executive_summary": "中" + "E" * 1_499,
         "priority_insights": [
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": "O" * 1_000,
+                "observation": "中" + "O" * 999,
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [
-                    "possible " + "X" * 991 for _ in range(3)
+                    "可能" + "X" * 998 for _ in range(3)
                 ],
-                "recommended_checks": ["C" * 1_000 for _ in range(3)],
+                "recommended_checks": ["中" + "C" * 999 for _ in range(3)],
                 "confidence": "medium",
             }
             for signal in selected_signals
         ],
-        "overall_limitations": ["L" * 1_000 for _ in range(10)],
+        "overall_limitations": ["中" + "L" * 999 for _ in range(10)],
     }
 
 

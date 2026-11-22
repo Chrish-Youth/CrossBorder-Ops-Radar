@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 
@@ -33,7 +34,9 @@ from src.insight_prompt import (
     InsightPromptError,
     PriorityInsight,
     build_insight_prompt,
+    build_insight_prompt_v1,
     validate_insight_output,
+    validate_insight_output_v1,
 )
 from src.insights import (
     INSIGHT_CONTEXT_LIMITATIONS,
@@ -45,6 +48,26 @@ from src.pipeline import PipelineResult, PipelineStatus, run_pipeline
 
 
 SAMPLE_PATH = Path(__file__).parents[1] / "data" / "sample_ecommerce_data.csv"
+
+FROZEN_HAN_RANGES = (
+    (0x3400, 0x4DBF),
+    (0x4E00, 0x9FFF),
+    (0xFA0E, 0xFA0F),
+    (0xFA11, 0xFA11),
+    (0xFA13, 0xFA14),
+    (0xFA1F, 0xFA1F),
+    (0xFA21, 0xFA21),
+    (0xFA23, 0xFA24),
+    (0xFA27, 0xFA29),
+    (0x20000, 0x2A6DF),
+    (0x2A700, 0x2B739),
+    (0x2B740, 0x2B81D),
+    (0x2B820, 0x2CEA1),
+    (0x2CEB0, 0x2EBE0),
+    (0x2EBF0, 0x2EE5D),
+    (0x30000, 0x3134A),
+    (0x31350, 0x323AF),
+)
 
 
 @pytest.fixture(scope="module")
@@ -111,17 +134,17 @@ def valid_payload(
     signal = context.diagnostic_signals[signal_position]
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "One diagnostic pattern warrants review.",
+        "executive_summary": "一个诊断模式值得核查。",
         "priority_insights": [
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": "The supplied context contains this diagnostic signal.",
+                "observation": "提供的上下文包含该诊断信号。",
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [
-                    "A possible association may warrant further investigation."
+                    "可能存在关联，仍有待进一步核实。"
                 ],
                 "recommended_checks": [
-                    "Review the supporting operational inputs for this group."
+                    "核查该分组的相关运营输入。"
                 ],
                 "confidence": "medium",
             }
@@ -133,10 +156,26 @@ def valid_payload(
 def empty_output_payload() -> dict[str, object]:
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "No diagnostic signals were supplied.",
+        "executive_summary": "未提供诊断信号。",
         "priority_insights": [],
         "overall_limitations": [],
     }
+
+
+def historical_v1_payload(
+    context: InsightContext,
+    *,
+    chinese: bool = False,
+) -> dict[str, object]:
+    payload = valid_payload(context)
+    payload["version"] = "1"
+    if not chinese:
+        payload["executive_summary"] = "One diagnostic pattern warrants review."
+        insight = payload["priority_insights"][0]  # type: ignore[index]
+        insight["observation"] = "The supplied context contains this signal."
+        insight["possible_explanations"] = ["A possible association may exist."]
+        insight["recommended_checks"] = ["Review the supporting inputs."]
+    return payload
 
 
 def context_at_prompt_size(
@@ -145,9 +184,10 @@ def context_at_prompt_size(
     target_bytes: int,
     fill: str,
     fill_bytes_after_json_escaping: int,
+    builder: Callable[[InsightContext], InsightPrompt] = build_insight_prompt,
 ) -> InsightContext:
     empty_context = context_with_message(source, "")
-    base_bytes = prompt_size(build_insight_prompt(empty_context))
+    base_bytes = prompt_size(builder(empty_context))
     remaining = target_bytes - base_bytes
     assert remaining >= 0
     fill_count, ascii_remainder = divmod(
@@ -178,13 +218,13 @@ def maximum_shape_output_payload(context: InsightContext) -> dict[str, object]:
         priorities.append(
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": "x",
+                "observation": "中",
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [
-                    "x" for _ in range(MAX_EXPLANATIONS_PER_INSIGHT)
+                    "中" for _ in range(MAX_EXPLANATIONS_PER_INSIGHT)
                 ],
                 "recommended_checks": [
-                    "x" for _ in range(MAX_CHECKS_PER_INSIGHT)
+                    "中" for _ in range(MAX_CHECKS_PER_INSIGHT)
                 ],
                 "confidence": "medium",
             }
@@ -192,9 +232,9 @@ def maximum_shape_output_payload(context: InsightContext) -> dict[str, object]:
     assert len(priorities) == MAX_PRIORITY_INSIGHTS
     return {
         "version": INSIGHT_OUTPUT_VERSION,
-        "executive_summary": "x",
+        "executive_summary": "中",
         "priority_insights": priorities,
-        "overall_limitations": ["x" for _ in range(MAX_OVERALL_LIMITATIONS)],
+        "overall_limitations": ["中" for _ in range(MAX_OVERALL_LIMITATIONS)],
     }
 
 
@@ -205,7 +245,7 @@ def output_payload_at_size(
     unicode_prefix: str = "",
 ) -> dict[str, object]:
     payload = maximum_shape_output_payload(context)
-    payload["executive_summary"] = f"x{unicode_prefix}"
+    payload["executive_summary"] = f"中{unicode_prefix}"
     slots: list[tuple[Any, str | int, int]] = [
         (payload, "executive_summary", MAX_EXECUTIVE_SUMMARY_CHARS)
     ]
@@ -238,10 +278,47 @@ def test_sample_prompt_api_and_versions(sample_context: InsightContext) -> None:
     prompt = build_insight_prompt(sample_context)
 
     assert isinstance(prompt, InsightPrompt)
-    assert prompt.version == INSIGHT_PROMPT_VERSION == "1"
-    assert INSIGHT_OUTPUT_VERSION == "1"
+    assert prompt.version == INSIGHT_PROMPT_VERSION == "2"
+    assert INSIGHT_OUTPUT_VERSION == "2"
     assert prompt.system_prompt
     assert prompt.user_prompt
+
+
+def test_historical_prompt_v1_is_byte_frozen(
+    sample_context: InsightContext,
+) -> None:
+    prompt = build_insight_prompt_v1(sample_context)
+
+    assert prompt.version == "1"
+    assert '"version": "1"' in prompt.user_prompt
+    assert "Simplified Chinese" not in prompt.system_prompt
+    assert len(prompt.system_prompt.encode("utf-8")) == 2_212
+    assert len(prompt.user_prompt.encode("utf-8")) == 9_194
+    assert sha256(prompt.system_prompt.encode("utf-8")).hexdigest() == (
+        "6ade276d88b8e6f8f2e2821db139ea87a647f09ecd910e68ed0b221d5f263171"
+    )
+    assert sha256(prompt.user_prompt.encode("utf-8")).hexdigest() == (
+        "b96d72ff0508572311c620906e324baa49b6ababe9dc4ff26f224d15bd01aa82"
+    )
+
+
+def test_prompt_v2_owns_language_policy_once_and_preserves_contract_rules(
+    sample_context: InsightContext,
+) -> None:
+    prompt = build_insight_prompt(sample_context)
+    system = prompt.system_prompt
+
+    assert "Simplified Chinese" in system
+    assert "Every individual\nnarrative string must contain at least one Han character" in system
+    assert "可能、或许或有待核实" in system
+    assert "Keep JSON keys" in system
+    assert "confidence enum values" in system
+    assert "evidence codes" in system
+    assert "technical identifiers" in system
+    assert "metric acronyms" in system
+    assert "source scope values unchanged" in system
+    assert "Simplified Chinese" not in prompt.user_prompt
+    assert '"version": "2"' in prompt.user_prompt
 
 
 @pytest.mark.parametrize("invalid", [None, {}, "context"])
@@ -523,6 +600,24 @@ def test_prompt_size_uses_final_post_escape_bytes_at_exact_boundaries(
     assert over_limit_context.to_dict() == before
 
 
+def test_context_at_v1_limit_is_explicitly_too_large_for_v2(
+    sample_context: InsightContext,
+) -> None:
+    context = context_at_prompt_size(
+        sample_context,
+        target_bytes=MAX_PROMPT_BYTES,
+        fill="x",
+        fill_bytes_after_json_escaping=1,
+        builder=build_insight_prompt_v1,
+    )
+
+    assert prompt_size(build_insight_prompt_v1(context)) == MAX_PROMPT_BYTES
+    with pytest.raises(InsightPromptError) as caught:
+        build_insight_prompt(context)
+
+    assert caught.value.code == PROMPT_TOO_LARGE
+
+
 def test_prompt_limit_is_applied_after_context_builder(
     sample_context: InsightContext,
 ) -> None:
@@ -596,6 +691,226 @@ def test_valid_sample_output_becomes_independent_dataclasses(
     assert sample_context.to_dict() == context_before
 
 
+@pytest.mark.parametrize("chinese", [False, True])
+def test_historical_output_v1_remains_language_unconstrained(
+    sample_context: InsightContext,
+    chinese: bool,
+) -> None:
+    payload = historical_v1_payload(sample_context, chinese=chinese)
+
+    output = validate_insight_output_v1(payload, context=sample_context)
+
+    assert output.version == "1"
+    assert output.to_dict() == payload
+
+
+def test_current_validator_rejects_v1_without_downgrade(
+    sample_context: InsightContext,
+) -> None:
+    payload = historical_v1_payload(sample_context, chinese=True)
+
+    with pytest.raises(InsightOutputError) as caught:
+        validate_insight_output(payload, context=sample_context)
+
+    assert caught.value.code == INVALID_INSIGHT_OUTPUT
+    assert "payload.version" in caught.value.message
+    assert "'2'" in caught.value.message
+
+
+@pytest.mark.parametrize(
+    ("narrative", "accepted"),
+    [
+        ("纯中文", True),
+        ("CTR/CVR/ROAS 指标待核查", True),
+        ("Amazon 表现待核查", True),
+        ("SKU-001 需要核查", True),
+        ("LOW_CVR 证据待核实", True),
+        ("10% / USD 数据待核查", True),
+        ("CTR is low.", False),
+        ("CTR is low，需 investigate.", True),
+        ("123 USD %", False),
+        ("CTR CVR ROAS", False),
+        ("🚀🙂", False),
+        ("，。！？", False),
+        ("營運表現有待核查", True),
+        ("简體混合內容", True),
+        ("売上は確認が必要です", True),
+    ],
+)
+def test_output_v2_adversarial_language_matrix(
+    sample_context: InsightContext,
+    narrative: str,
+    accepted: bool,
+) -> None:
+    payload = empty_output_payload()
+    payload["executive_summary"] = narrative
+
+    if accepted:
+        assert validate_insight_output(payload, context=sample_context).executive_summary == narrative
+    else:
+        with pytest.raises(InsightOutputError) as caught:
+            validate_insight_output(payload, context=sample_context)
+        assert caught.value.code == INVALID_INSIGHT_OUTPUT
+        assert narrative not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    "code_point",
+    [boundary for interval in FROZEN_HAN_RANGES for boundary in interval],
+)
+def test_every_frozen_han_range_accepts_both_boundaries(
+    sample_context: InsightContext,
+    code_point: int,
+) -> None:
+    payload = empty_output_payload()
+    payload["executive_summary"] = chr(code_point)
+
+    output = validate_insight_output(payload, context=sample_context)
+
+    assert output.executive_summary == chr(code_point)
+
+
+@pytest.mark.parametrize(
+    "code_point",
+    sorted(
+        {
+            adjacent
+            for start, end in FROZEN_HAN_RANGES
+            for adjacent in (start - 1, end + 1)
+            if adjacent >= 0
+            and not any(
+                other_start <= adjacent <= other_end
+                for other_start, other_end in FROZEN_HAN_RANGES
+            )
+        }
+    ),
+)
+def test_adjacent_code_points_outside_frozen_han_ranges_are_rejected(
+    sample_context: InsightContext,
+    code_point: int,
+) -> None:
+    payload = empty_output_payload()
+    payload["executive_summary"] = chr(code_point)
+
+    with pytest.raises(InsightOutputError) as caught:
+        validate_insight_output(payload, context=sample_context)
+
+    assert caught.value.code == INVALID_INSIGHT_OUTPUT
+
+
+@pytest.mark.parametrize(
+    "code_point",
+    [0xFA10, 0xFA12, 0xFA15, 0xFA1E, 0xFA20, 0xFA22, 0xFA25, 0xFA26, 0xFA2A],
+)
+def test_faxx_compatibility_gaps_are_not_accidentally_accepted(
+    sample_context: InsightContext,
+    code_point: int,
+) -> None:
+    payload = empty_output_payload()
+    payload["executive_summary"] = chr(code_point)
+
+    with pytest.raises(InsightOutputError):
+        validate_insight_output(payload, context=sample_context)
+
+
+@pytest.mark.parametrize(
+    ("target", "expected_path"),
+    [
+        ("executive_summary", "payload.executive_summary"),
+        ("observation", "payload.priority_insights[0].observation"),
+        (
+            "explanation",
+            "payload.priority_insights[0].possible_explanations[0]",
+        ),
+        ("check", "payload.priority_insights[0].recommended_checks[0]"),
+        ("limitation", "payload.overall_limitations[0]"),
+    ],
+)
+def test_each_narrative_string_is_independently_language_validated(
+    sample_context: InsightContext,
+    target: str,
+    expected_path: str,
+) -> None:
+    secret = "SECRET_ENGLISH_PROVIDER_OUTPUT_123"
+    payload = valid_payload(sample_context)
+    payload["overall_limitations"] = ["数据范围有限。"]
+    if target == "executive_summary":
+        payload["executive_summary"] = secret
+    elif target == "observation":
+        payload["priority_insights"][0]["observation"] = secret  # type: ignore[index]
+    elif target == "explanation":
+        payload["priority_insights"][0]["possible_explanations"] = [secret]  # type: ignore[index]
+    elif target == "check":
+        payload["priority_insights"][0]["recommended_checks"] = [secret]  # type: ignore[index]
+    else:
+        payload["overall_limitations"] = [secret]
+
+    with pytest.raises(InsightOutputError) as caught:
+        validate_insight_output(payload, context=sample_context)
+
+    assert caught.value.code == INVALID_INSIGHT_OUTPUT
+    assert expected_path in caught.value.message
+    assert secret not in caught.value.message
+    assert secret not in str(caught.value)
+
+
+def test_one_chinese_list_item_does_not_validate_an_english_sibling(
+    sample_context: InsightContext,
+) -> None:
+    payload = valid_payload(sample_context)
+    payload["priority_insights"][0]["possible_explanations"] = [  # type: ignore[index]
+        "可能需要核实。",
+        "English-only sibling.",
+    ]
+
+    with pytest.raises(InsightOutputError) as caught:
+        validate_insight_output(payload, context=sample_context)
+
+    assert "possible_explanations[1]" in caught.value.message
+
+
+def test_valid_v2_narrative_text_is_preserved_byte_for_byte(
+    sample_context: InsightContext,
+) -> None:
+    payload = valid_payload(sample_context)
+    summary = "  營運 CTR  10% 🚀 e\u0301；保持原样。  "
+    observation = "Amazon / SKU-001：观察值。"
+    explanation = "可能与 CVR 有关；需核实。"
+    check = "核查 USD 12.50 与 LOW_CVR。"
+    limitation = "資料有限🙂，不作轉換。"
+    payload["executive_summary"] = summary
+    payload["priority_insights"][0]["observation"] = observation  # type: ignore[index]
+    payload["priority_insights"][0]["possible_explanations"] = [explanation]  # type: ignore[index]
+    payload["priority_insights"][0]["recommended_checks"] = [check]  # type: ignore[index]
+    payload["overall_limitations"] = [limitation]
+
+    output = validate_insight_output(payload, context=sample_context)
+
+    assert output.executive_summary == summary
+    assert output.priority_insights[0].observation == observation
+    assert output.priority_insights[0].possible_explanations == (explanation,)
+    assert output.priority_insights[0].recommended_checks == (check,)
+    assert output.overall_limitations == (limitation,)
+    assert output.priority_insights[0].scope == payload["priority_insights"][0]["scope"]  # type: ignore[index]
+    assert output.priority_insights[0].evidence_codes == tuple(
+        payload["priority_insights"][0]["evidence_codes"]  # type: ignore[index]
+    )
+    assert output.priority_insights[0].confidence == "medium"
+
+
+def test_language_validation_runs_after_structural_validation(
+    sample_context: InsightContext,
+) -> None:
+    payload = valid_payload(sample_context)
+    payload["executive_summary"] = "English only."
+    payload["priority_insights"][0]["observation"] = 123  # type: ignore[index]
+
+    with pytest.raises(InsightOutputError) as caught:
+        validate_insight_output(payload, context=sample_context)
+
+    assert "observation 必须是 string" in caught.value.message
+
+
 @pytest.mark.parametrize("unicode_prefix", ["", "分析🚀"])
 def test_canonical_output_size_accepts_exact_limit_and_rejects_next_byte(
     sample_context: InsightContext,
@@ -627,23 +942,23 @@ def test_canonical_output_size_accepts_exact_limit_and_rejects_next_byte(
     assert sample_context.to_dict() == context_before
 
 
-def test_maximal_emoji_output_is_rejected_without_truncation(
+def test_maximal_mixed_han_emoji_output_is_rejected_without_truncation(
     sample_context: InsightContext,
 ) -> None:
     payload = maximum_shape_output_payload(sample_context)
-    payload["executive_summary"] = "🚀" * MAX_EXECUTIVE_SUMMARY_CHARS
+    payload["executive_summary"] = "中" + "🚀" * (MAX_EXECUTIVE_SUMMARY_CHARS - 1)
     for insight in payload["priority_insights"]:  # type: ignore[union-attr]
-        insight["observation"] = "🚀" * MAX_OBSERVATION_CHARS
+        insight["observation"] = "中" + "🚀" * (MAX_OBSERVATION_CHARS - 1)
         insight["possible_explanations"] = [
-            "🚀" * MAX_INSIGHT_TEXT_CHARS
+            "中" + "🚀" * (MAX_INSIGHT_TEXT_CHARS - 1)
             for _ in range(MAX_EXPLANATIONS_PER_INSIGHT)
         ]
         insight["recommended_checks"] = [
-            "🚀" * MAX_INSIGHT_TEXT_CHARS
+            "中" + "🚀" * (MAX_INSIGHT_TEXT_CHARS - 1)
             for _ in range(MAX_CHECKS_PER_INSIGHT)
         ]
     payload["overall_limitations"] = [
-        "🚀" * MAX_INSIGHT_TEXT_CHARS
+        "中" + "🚀" * (MAX_INSIGHT_TEXT_CHARS - 1)
         for _ in range(MAX_OVERALL_LIMITATIONS)
     ]
     before = deepcopy(payload)
@@ -698,7 +1013,7 @@ def test_output_rejects_unknown_and_causal_top_level_fields(
     assert caught.value.code == INVALID_INSIGHT_OUTPUT
 
 
-@pytest.mark.parametrize("version", ["2", 1, None, ["1"]])
+@pytest.mark.parametrize("version", ["1", 2, None, ["2"]])
 def test_output_rejects_wrong_version(
     version: object,
     sample_context: InsightContext,
@@ -965,16 +1280,18 @@ def test_primary_text_limits_accept_maximum_and_reject_next_character(
 ) -> None:
     accepted = valid_payload(sample_context)
     if field == "executive_summary":
-        accepted[field] = "x" * limit
+        accepted[field] = "中" + "x" * (limit - 1)
     else:
-        accepted["priority_insights"][0][field] = "x" * limit  # type: ignore[index]
+        accepted["priority_insights"][0][field] = (  # type: ignore[index]
+            "中" + "x" * (limit - 1)
+        )
     validate_insight_output(accepted, context=sample_context)
 
     rejected = deepcopy(accepted)
     if field == "executive_summary":
-        rejected[field] = "x" * (limit + 1)
+        rejected[field] = "中" + "x" * limit
     else:
-        rejected["priority_insights"][0][field] = "x" * (limit + 1)  # type: ignore[index]
+        rejected["priority_insights"][0][field] = "中" + "x" * limit  # type: ignore[index]
     with pytest.raises(InsightOutputError) as caught:
         validate_insight_output(rejected, context=sample_context)
 
@@ -991,13 +1308,13 @@ def test_insight_item_text_limit_accepts_maximum_and_rejects_next_character(
 ) -> None:
     accepted = valid_payload(sample_context)
     accepted["priority_insights"][0][field] = [  # type: ignore[index]
-        "x" * MAX_INSIGHT_TEXT_CHARS
+        "中" + "x" * (MAX_INSIGHT_TEXT_CHARS - 1)
     ]
     validate_insight_output(accepted, context=sample_context)
 
     rejected = deepcopy(accepted)
     rejected["priority_insights"][0][field] = [  # type: ignore[index]
-        "x" * (MAX_INSIGHT_TEXT_CHARS + 1)
+        "中" + "x" * MAX_INSIGHT_TEXT_CHARS
     ]
     with pytest.raises(InsightOutputError) as caught:
         validate_insight_output(rejected, context=sample_context)
@@ -1039,7 +1356,7 @@ def test_priority_insight_limit_accepts_maximum_and_rejects_next(
         priorities.append(
             {
                 "scope": deepcopy(signal["group"]),
-                "observation": f"Observed signal {signal['code']}.",
+                    "observation": f"观察到信号 {signal['code']}。",
                 "evidence_codes": [signal["code"]],
                 "possible_explanations": [],
                 "recommended_checks": [],
@@ -1075,13 +1392,13 @@ def test_per_insight_array_limits_accept_maximum_and_reject_next(
 ) -> None:
     accepted = valid_payload(sample_context)
     accepted["priority_insights"][0][field] = [  # type: ignore[index]
-        f"item-{position}" for position in range(limit)
+        f"项目-{position}" for position in range(limit)
     ]
     validate_insight_output(accepted, context=sample_context)
 
     rejected = deepcopy(accepted)
     rejected["priority_insights"][0][field] = [  # type: ignore[index]
-        f"item-{position}" for position in range(limit + 1)
+        f"项目-{position}" for position in range(limit + 1)
     ]
     with pytest.raises(InsightOutputError) as caught:
         validate_insight_output(rejected, context=sample_context)
@@ -1094,11 +1411,11 @@ def test_overall_limitations_array_limit(
 ) -> None:
     accepted = valid_payload(sample_context)
     accepted["overall_limitations"] = [
-        f"limitation-{position}" for position in range(MAX_OVERALL_LIMITATIONS)
+        f"局限-{position}" for position in range(MAX_OVERALL_LIMITATIONS)
     ]
     validate_insight_output(accepted, context=sample_context)
 
-    accepted["overall_limitations"].append("one-too-many")  # type: ignore[union-attr]
+    accepted["overall_limitations"].append("额外一项")  # type: ignore[union-attr]
     with pytest.raises(InsightOutputError) as caught:
         validate_insight_output(accepted, context=sample_context)
 
@@ -1122,7 +1439,7 @@ def test_evidence_code_array_limit() -> None:
     accepted["priority_insights"] = [
         {
             "scope": {},
-            "observation": "Multiple supplied signals are present.",
+            "observation": "存在多个已提供的信号。",
             "evidence_codes": codes[:MAX_EVIDENCE_CODES_PER_INSIGHT],
             "possible_explanations": [],
             "recommended_checks": [],
@@ -1163,7 +1480,7 @@ def test_same_scope_with_different_evidence_is_allowed_and_order_preserved(
     first["evidence_codes"] = ["LOW_CVR"]
     second = deepcopy(first)
     second["evidence_codes"] = ["LOW_ROAS"]
-    second["observation"] = "A second distinct supplied signal is present."
+    second["observation"] = "存在第二个不同的已提供信号。"
     payload["priority_insights"].append(second)  # type: ignore[union-attr]
 
     output = validate_insight_output(payload, context=sample_context)

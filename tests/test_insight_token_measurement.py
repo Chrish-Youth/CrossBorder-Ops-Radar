@@ -26,7 +26,11 @@ import pytest
 
 import src.insight_token_measurement as measurement
 from src.insight_prompt import (
-    InsightPrompt, InsightPromptError, MAX_PROMPT_BYTES, build_insight_prompt,
+    InsightPrompt,
+    InsightPromptError,
+    MAX_PROMPT_BYTES,
+    build_insight_prompt,
+    build_insight_prompt_v1,
 )
 from src.insight_provider import ProviderGeneration, ProviderUsage
 from src.insights import build_insight_context
@@ -195,6 +199,20 @@ def test_context_is_not_a_prompt(sample_context):
     assert_error(lambda: measurement.measure_insight_prompt_tokens(sample_context), measurement.INVALID_TOKEN_MEASUREMENT_INPUT)
 
 
+def test_current_production_prompt_v2_is_rejected_before_asset_loading(
+    sample_context,
+    monkeypatch,
+):
+    prompt = build_insight_prompt(sample_context)
+    monkeypatch.setattr(measurement, "_load_verified_resources", fail_if_called)
+
+    assert prompt.version == "2"
+    assert_error(
+        lambda: measurement.measure_insight_prompt_tokens(prompt),
+        measurement.INVALID_TOKEN_MEASUREMENT_INPUT,
+    )
+
+
 def test_string_subclass_cannot_run_custom_encoding():
     class Text(str):
         def encode(self, *args, **kwargs):
@@ -245,7 +263,7 @@ def test_known_framing_token_ids_and_empty_input():
 def test_exact_production_messages_pass_to_official_encoder(sample_context, monkeypatch):
     from src.deepseek_provider import _completion_request
 
-    prompt = build_insight_prompt(sample_context)
+    prompt = build_insight_prompt_v1(sample_context)
     resources = measurement._load_verified_resources()
     captured = []
 
@@ -275,7 +293,7 @@ def test_exact_production_messages_pass_to_official_encoder(sample_context, monk
 ])
 def test_production_builder_reference_counts(group_by, body_bytes, tokens):
     context = build_insight_context(run_pipeline(ROOT / "data/sample_ecommerce_data.csv", group_by=group_by))
-    prompt = build_insight_prompt(context)
+    prompt = build_insight_prompt_v1(context)
     result = measurement.measure_insight_prompt_tokens(prompt)
     assert result.prompt_body_utf8_bytes == len(prompt.system_prompt.encode()) + len(prompt.user_prompt.encode()) == body_bytes
     assert result.local_encoded_input_tokens == tokens
@@ -286,7 +304,7 @@ def boundary_prompt(context, pattern):
     def build(text):
         modified = deepcopy(context)
         modified.diagnostic_signals[0]["message"] = text
-        return build_insight_prompt(modified)
+        return build_insight_prompt_v1(modified)
 
     lo, hi = 0, MAX_PROMPT_BYTES // len(pattern.encode("utf-8")) + 1
     while lo + 1 < hi:

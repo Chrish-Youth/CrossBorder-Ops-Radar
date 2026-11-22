@@ -24,7 +24,6 @@ INVALID_PROVIDER INVALID_PROVIDER_RESPONSE PROVIDER_RESPONSE_TOO_LARGE
 INVALID_PROVIDER_JSON INVALID_INSIGHT_OUTPUT OUTPUT_TOO_LARGE INVALID_PROVIDER_USAGE
 INVALID_INSIGHT_INPUT INVALID_PROMPT_INPUT PIPELINE_NOT_ANALYZABLE
 INSIGHT_CONTEXT_TOO_LARGE PROMPT_TOO_LARGE NON_FINITE_INSIGHT_VALUE
-INVALID_RECEIPT_V4_INPUT INVALID_LOGICAL_GENERATION_COST INVALID_RETRY_EXECUTION
 UNEXPECTED_AI_ERROR
 """.split())
 EXPECTED_ERRORS = set("""
@@ -51,8 +50,7 @@ def test_resources_are_nonblank_strings_and_required_categories_exist() -> None:
     categories = {
         "TEXT", "GROUP_LABELS", "SCOPE_LABELS", "METRIC_LABELS", "METRIC_HELP",
         "FIELD_LABELS", "TABLE_CODE_LABELS", "LEVEL_LABELS", "CONFIDENCE_LABELS",
-        "EXECUTION_STATUS_LABELS", "COST_STATUS_LABELS", "PRICING_TIER_LABELS",
-        "COST_UNAVAILABLE_MESSAGES", "VALIDATION_MESSAGES", "DIAGNOSTIC_LABELS",
+        "VALIDATION_MESSAGES", "DIAGNOSTIC_LABELS",
         "DIAGNOSTIC_MESSAGES", "AI_ERROR_MESSAGES", "ERROR_MESSAGES", "ERROR_TITLES",
     }
     assert categories <= set(vars(ui))
@@ -107,7 +105,6 @@ def test_validation_and_diagnostic_maps_are_complete() -> None:
 
 
 def test_safe_error_inventory_is_complete() -> None:
-    assert len(EXPECTED_AI_CODES) == 26
     assert set(ui.AI_ERROR_MESSAGES) == EXPECTED_AI_CODES
     assert set(ui.ERROR_MESSAGES) == EXPECTED_ERRORS
     assert ui.AI_ERROR_MESSAGES["PROVIDER_TIMEOUT"] == "Provider 请求超时。"
@@ -124,23 +121,6 @@ def test_ai_safe_messages_do_not_expose_error_codes(code: str) -> None:
 @pytest.mark.parametrize("code", ["UNKNOWN_CODE", "<SECRET>", "SECRET\nRAW", "", None, []])
 def test_unknown_or_untrusted_ai_code_has_safe_fallback(code: object) -> None:
     assert app._ai_error_message(code) == "AI 洞察生成遇到意外错误。"  # type: ignore[arg-type]
-
-
-def test_cost_and_execution_states_are_exact_and_truthful() -> None:
-    assert ui.COST_STATUS_LABELS == {
-        "available": "成本估算可用", "fully_estimated": "本次逻辑生成总成本已完整估算",
-        "unknown_total": "本次逻辑生成总成本未知", "unavailable": "成本估算不可用",
-    }
-    assert ui.EXECUTION_STATUS_LABELS == {"succeeded": "成功", "failed": "失败"}
-    assert set(ui.PRICING_TIER_LABELS) == {"peak", "off_peak"}
-    assert set(ui.COST_UNAVAILABLE_MESSAGES) == {
-        "USAGE_UNAVAILABLE", "CACHE_BREAKDOWN_UNAVAILABLE", "POLICY_NOT_EFFECTIVE", "POLICY_NOT_APPLICABLE",
-    }
-    assert ui.TEXT["final_cost"].format(amount="0.000000000001") == "最终成功调用估算成本（USD）：$0.000000000001"
-    assert ui.TEXT["delay_item"].format(attempt=1, milliseconds=2500) == "第 1 次调用尝试后，请求等待 2,500 ms"
-    assert "不代表 Provider 最终账单" in ui.TEXT["cost_disclaimer"]
-    assert "Provider 报告" in ui.TEXT["usage"]
-    assert "先前失败调用" in ui.TEXT["logical_unknown"]
 
 
 def test_all_controlled_templates_format_and_app_references_exist() -> None:
